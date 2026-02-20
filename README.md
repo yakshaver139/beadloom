@@ -10,19 +10,19 @@ Beadloom reads a task graph from a Beads database, computes critical paths and p
 - [Beads](https://github.com/steveyegge/beads) (`bd` CLI) installed and initialized in your repo
 - [Claude Code](https://claude.ai/claude-code) CLI (`claude`) installed
 - `ANTHROPIC_API_KEY` environment variable (required for `infer-deps` command)
-- [Node.js](https://nodejs.org/) 18+ (required for `view` command)
+- [Node.js](https://nodejs.org/) 18+ (only needed to rebuild the visualiser frontend with `make build-ui`)
 
 ## Installation
 
 ```bash
 git clone --recurse-submodules https://github.com/yakshaver139/beadloom
-go install ./cmd/beadloom
+make install
 ```
 
-Or build locally:
+This builds the visualiser frontend, embeds it in the Go binary, and installs it. If you don't need the browser visualiser (`bdl view`), you can skip the frontend build:
 
 ```bash
-make build
+go install ./cmd/beadloom
 ```
 
 If you already cloned without `--recurse-submodules`, fetch the visualiser submodule with:
@@ -218,14 +218,13 @@ dot -Tsvg graph.dot > graph.svg        # render with Graphviz
 Open an interactive browser visualiser (React Flow) for the execution plan:
 
 ```bash
-beadloom view                          # start servers, POST plan, open browser
-beadloom view --no-open                # start servers + POST plan, skip browser
-beadloom view --port 4000              # custom API server port
-beadloom view --ui-port 3000           # custom Vite frontend port
+beadloom view                          # start server, POST plan, open browser
+beadloom view --no-open                # start server + POST plan, skip browser
+beadloom view --port 4000              # custom server port (default 7171)
 beadloom view --filter "label=backend" # filter tasks before viewing
 ```
 
-On first run this installs npm dependencies and starts two background processes (API server and Vite dev server). Subsequent runs detect the running servers and just POST the latest plan. The servers continue running in the background after the command exits.
+The visualiser frontend is embedded in the Go binary — no Node.js runtime required. A single HTTP server serves both the API and the SPA. Subsequent runs detect the running server and just POST the latest plan.
 
 ## How It Works
 
@@ -304,8 +303,9 @@ beadloom/
 │   ├── worktree/           # Git worktree lifecycle management
 │   ├── orchestrator/       # Wave execution engine + Claude agent spawning
 │   ├── reporter/           # Terminal status display + JSON output
-│   └── state/              # Persistent state (.beadloom/state.json)
-├── beadloom_visualiser/    # React Flow browser UI (git submodule)
+│   ├── state/              # Persistent state (.beadloom/state.json)
+│   └── viewer/             # Embedded HTTP server + SPA for `bdl view`
+├── beadloom_visualiser/    # React Flow browser UI source (git submodule)
 └── templates/              # Default agent prompt template
 ```
 
@@ -320,8 +320,10 @@ beadloom/
 ## Development
 
 ```bash
-make build      # build binary
-make test       # run tests
+make build-ui   # build visualiser frontend into internal/viewer/dist/
+make build      # build-ui + compile Go binary
+make install    # build-ui + go install
+make test       # run tests (no Node.js required)
 make test-v     # run tests verbose
 make lint       # go vet
 make clean      # remove binary and temp dirs

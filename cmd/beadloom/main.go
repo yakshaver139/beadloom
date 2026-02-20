@@ -1,16 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -26,6 +22,7 @@ import (
 	"github.com/joshharrison/beadloom/internal/reporter"
 	"github.com/joshharrison/beadloom/internal/state"
 	"github.com/joshharrison/beadloom/internal/ui"
+	"github.com/joshharrison/beadloom/internal/viewer"
 	"github.com/joshharrison/beadloom/internal/worktree"
 	"github.com/spf13/cobra"
 )
@@ -695,147 +692,55 @@ func vizCmd() *cobra.Command {
 func viewCmd() *cobra.Command {
 	var (
 		flagPort   int
-		flagUIPort int
 		flagNoOpen bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "view",
 		Short: "Open interactive browser visualiser for the execution plan",
-		Long: `Builds the execution plan from the beads database, starts the
-beadloom_visualiser servers (if not already running), POSTs the plan
-graph, and opens the UI in your browser.`,
+		Long: `Builds the execution plan from the beads database, starts an
+embedded HTTP server with the visualiser UI, POSTs the plan graph,
+and opens the UI in your browser.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			plan, _, _, err := buildPlan()
 			if err != nil {
 				return err
 			}
 
-			planJSON, err := json.Marshal(plan)
-			if err != nil {
-				return fmt.Errorf("marshal plan: %w", err)
-			}
+			addr := fmt.Sprintf("localhost:%d", flagPort)
+			baseURL := fmt.Sprintf("http://%s", addr)
 
-			apiAddr := fmt.Sprintf("localhost:%d", flagPort)
-
-			// Check if the API server is already running
-			conn, err := net.DialTimeout("tcp", apiAddr, 500*time.Millisecond)
-			if err != nil {
-				// Server not running — start it
-				visDir, err := findVisualiserDir()
+			if !viewer.IsPortOpen(addr) {
+				url, err := viewer.Start(flagPort)
 				if err != nil {
-					return err
+					return fmt.Errorf("start viewer: %w", err)
 				}
-
-				// Ensure node_modules exists
-				nmPath := filepath.Join(visDir, "node_modules")
-				if _, err := os.Stat(nmPath); os.IsNotExist(err) {
-					fmt.Printf("📦 Installing visualiser dependencies...\n")
-					install := exec.Command("npm", "install")
-					install.Dir = visDir
-					install.Stdout = os.Stdout
-					install.Stderr = os.Stderr
-					if err := install.Run(); err != nil {
-						return fmt.Errorf("npm install failed: %w", err)
-					}
-				}
-
-				// Start API server
-				apiCmd := exec.Command("npx", "tsx", "src/server/index.ts")
-				apiCmd.Dir = visDir
-				apiCmd.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", flagPort))
-				apiCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-				if err := apiCmd.Start(); err != nil {
-					return fmt.Errorf("start API server: %w", err)
-				}
-				fmt.Printf("🖥️  Started API server (PID %d) on port %d\n", apiCmd.Process.Pid, flagPort)
-
-				// Start Vite frontend
-				uiCmd := exec.Command("npx", "vite", "--port", strconv.Itoa(flagUIPort))
-				uiCmd.Dir = visDir
-				uiCmd.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", flagUIPort))
-				uiCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-				if err := uiCmd.Start(); err != nil {
-					return fmt.Errorf("start Vite dev server: %w", err)
-				}
-				fmt.Printf("🌐 Started Vite dev server (PID %d) on port %d\n", uiCmd.Process.Pid, flagUIPort)
-
-				// Wait for API server to become ready
-				fmt.Printf("⏳ Waiting for API server...")
-				ready := false
-				for i := 0; i < 30; i++ {
-					c, err := net.DialTimeout("tcp", apiAddr, 500*time.Millisecond)
-					if err == nil {
-						c.Close()
-						ready = true
-						break
-					}
-					time.Sleep(500 * time.Millisecond)
-				}
-				if !ready {
-					return fmt.Errorf("API server did not become ready within 15s")
-				}
-				fmt.Printf(" ready!\n")
+				fmt.Printf("🖥️  Started viewer on %s\n", url)
 			} else {
-				conn.Close()
-				fmt.Printf("🖥️  API server already running on port %d\n", flagPort)
+				fmt.Printf("🖥️  Viewer already running on %s\n", baseURL)
 			}
 
-			// POST plan to /graph
-			graphURL := fmt.Sprintf("http://%s/graph", apiAddr)
-			resp, err := http.Post(graphURL, "application/json", bytes.NewReader(planJSON))
-			if err != nil {
-				return fmt.Errorf("POST /graph: %w", err)
+			if err := viewer.PostPlan(baseURL, plan); err != nil {
+				return err
 			}
-			resp.Body.Close()
-
-			if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("POST /graph returned %d", resp.StatusCode)
-			}
-
-			uiURL := fmt.Sprintf("http://localhost:%d", flagUIPort)
 			fmt.Printf("✅ Plan sent to visualiser\n")
 
 			if !flagNoOpen {
-				openBrowser(uiURL)
-				fmt.Printf("🌐 Opened %s\n", uiURL)
+				openBrowser(baseURL)
+				fmt.Printf("🌐 Opened %s\n", baseURL)
 			} else {
-				fmt.Printf("🌐 Open %s in your browser\n", uiURL)
+				fmt.Printf("🌐 Open %s in your browser\n", baseURL)
 			}
 
 			return nil
 		},
 	}
 
-	cmd.Flags().IntVar(&flagPort, "port", 3001, "API server port")
-	cmd.Flags().IntVar(&flagUIPort, "ui-port", 5173, "Vite frontend port")
+	cmd.Flags().IntVar(&flagPort, "port", 7171, "Viewer server port")
 	cmd.Flags().BoolVar(&flagNoOpen, "no-open", false, "Skip opening browser")
 	cmd.Flags().StringVar(&flagFilter, "filter", "", "Filter tasks before viewing")
 
 	return cmd
-}
-
-// findVisualiserDir locates the beadloom_visualiser directory.
-func findVisualiserDir() (string, error) {
-	// 1. Next to the running binary
-	if exe, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "beadloom_visualiser")
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate, nil
-		}
-	}
-
-	// 2. In the current working directory
-	if wd, err := os.Getwd(); err == nil {
-		candidate := filepath.Join(wd, "beadloom_visualiser")
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate, nil
-		}
-	}
-
-	return "", fmt.Errorf("beadloom_visualiser directory not found.\n" +
-		"Make sure you cloned with --recurse-submodules, or run:\n" +
-		"  git submodule update --init")
 }
 
 // openBrowser opens the given URL in the default browser.
@@ -851,6 +756,7 @@ func openBrowser(url string) {
 	}
 	cmd.Start()
 }
+
 
 // --- Output helpers ---
 
