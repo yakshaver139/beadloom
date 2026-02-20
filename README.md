@@ -10,10 +10,12 @@ Beadloom reads a task graph from a Beads database, computes critical paths and p
 - [Beads](https://github.com/steveyegge/beads) (`bd` CLI) installed and initialized in your repo
 - [Claude Code](https://claude.ai/claude-code) CLI (`claude`) installed
 - `ANTHROPIC_API_KEY` environment variable (required for `infer-deps` command)
+- [Node.js](https://nodejs.org/) 18+ (required for `view` command)
 
 ## Installation
 
 ```bash
+git clone --recurse-submodules https://github.com/yakshaver139/beadloom
 go install ./cmd/beadloom
 ```
 
@@ -21,6 +23,12 @@ Or build locally:
 
 ```bash
 make build
+```
+
+If you already cloned without `--recurse-submodules`, fetch the visualiser submodule with:
+
+```bash
+git submodule update --init
 ```
 
 ## Quick Start
@@ -205,6 +213,20 @@ beadloom viz --format dot > graph.dot  # Graphviz DOT format
 dot -Tsvg graph.dot > graph.svg        # render with Graphviz
 ```
 
+### `beadloom view`
+
+Open an interactive browser visualiser (React Flow) for the execution plan:
+
+```bash
+beadloom view                          # start servers, POST plan, open browser
+beadloom view --no-open                # start servers + POST plan, skip browser
+beadloom view --port 4000              # custom API server port
+beadloom view --ui-port 3000           # custom Vite frontend port
+beadloom view --filter "label=backend" # filter tasks before viewing
+```
+
+On first run this installs npm dependencies and starts two background processes (API server and Vite dev server). Subsequent runs detect the running servers and just POST the latest plan. The servers continue running in the background after the command exits.
+
 ## How It Works
 
 1. **Graph Building** -- Queries `bd list --json --status open` for all open tasks, then `bd dep list <id>` for each to build a directed acyclic graph (DAG). Detects cycles defensively.
@@ -272,18 +294,19 @@ Beadloom is tested against `bd` v0.52+. It uses these `bd` commands:
 
 ```
 beadloom/
-├── cmd/beadloom/         # CLI entry point (cobra)
+├── cmd/beadloom/           # CLI entry point (cobra)
 ├── internal/
-│   ├── bd/               # bd CLI wrapper (list, show, dep, worktree, close)
-│   ├── claude/           # Claude API client (dependency inference)
-│   ├── graph/            # Task DAG builder + cycle detection
-│   ├── cpm/              # Critical Path Method analyzer
-│   ├── planner/          # Execution plan + prompt generation
-│   ├── worktree/         # Git worktree lifecycle management
-│   ├── orchestrator/     # Wave execution engine + Claude agent spawning
-│   ├── reporter/         # Terminal status display + JSON output
-│   └── state/            # Persistent state (.beadloom/state.json)
-└── templates/            # Default agent prompt template
+│   ├── bd/                 # bd CLI wrapper (list, show, dep, worktree, close)
+│   ├── claude/             # Claude API client (dependency inference)
+│   ├── graph/              # Task DAG builder + cycle detection
+│   ├── cpm/                # Critical Path Method analyzer
+│   ├── planner/            # Execution plan + prompt generation
+│   ├── worktree/           # Git worktree lifecycle management
+│   ├── orchestrator/       # Wave execution engine + Claude agent spawning
+│   ├── reporter/           # Terminal status display + JSON output
+│   └── state/              # Persistent state (.beadloom/state.json)
+├── beadloom_visualiser/    # React Flow browser UI (git submodule)
+└── templates/              # Default agent prompt template
 ```
 
 ## Edge Cases

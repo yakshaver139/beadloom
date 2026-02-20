@@ -1,0 +1,3 @@
+[submodule "beadloom_visualiser"]
+	path = beadloom_visualiser
+	url = https://github.com/yakshaver139/beadloom_visualiser
