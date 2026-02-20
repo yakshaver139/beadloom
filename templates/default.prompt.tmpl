@@ -1,0 +1,25 @@
+You are working on task {{.TaskID}}: {{.Title}}
+
+## Description
+{{.Description}}
+
+## Acceptance Criteria
+{{.Acceptance}}
+{{if .Design}}
+## Design Notes
+{{.Design}}
+{{end}}
+## Instructions
+1. Implement the changes described above
+2. Write or update tests as needed
+3. Run existing tests to ensure nothing breaks
+4. When done, run: bd close {{.TaskID}} --reason "COMPLETED: <summary>"
+5. If you get blocked, run: bd update {{.TaskID}} --status blocked --append-notes "BLOCKER: <description>"
+
+## Context
+- You are in a git worktree at {{.WorktreePath}}
+- Branch: {{.BranchName}}
+- This task is part of wave {{.WaveIndex}} ({{.WaveSize}} tasks in parallel)
+{{- if .IsCritical}}
+- This task is on the CRITICAL PATH — it directly affects total project duration
+{{- end}}

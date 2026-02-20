@@ -1,0 +1,39 @@
+package orchestrator
+
+import (
+	"time"
+)
+
+// Config holds orchestrator configuration.
+type Config struct {
+	MaxParallel    int
+	Safe           bool
+	Quiet          bool
+	TimeoutPerTask time.Duration
+	WorktreeDir    string
+	DbPath         string
+	ClaudeBin      string // path to claude binary (default: "claude")
+}
+
+// SessionStatus represents the status of an agent session.
+type SessionStatus string
+
+const (
+	StatusPending   SessionStatus = "pending"
+	StatusRunning   SessionStatus = "running"
+	StatusCompleted SessionStatus = "completed"
+	StatusFailed    SessionStatus = "failed"
+	StatusCancelled SessionStatus = "cancelled"
+)
+
+// AgentSession tracks a running Claude agent.
+type AgentSession struct {
+	TaskID       string
+	WorktreePath string
+	Status       SessionStatus
+	StartedAt    time.Time
+	FinishedAt   time.Time
+	ExitCode     int
+	LogFile      string
+	PID          int
+}

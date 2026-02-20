@@ -1,0 +1,11 @@
+# Binary
+beadloom
+
+# Beads local database
+.beads/
+
+# IDE / editor
+.vscode/
+
+# Claude Code local settings
+.claude/
