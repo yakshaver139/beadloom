@@ -732,6 +732,12 @@ and opens the UI in your browser.`,
 				fmt.Printf("🌐 Open %s in your browser\n", baseURL)
 			}
 
+			fmt.Printf("Press Ctrl+C to stop the server.\n")
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			<-sigCh
+			fmt.Println()
+
 			return nil
 		},
 	}

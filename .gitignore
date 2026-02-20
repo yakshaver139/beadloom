@@ -10,6 +10,5 @@
 # Claude Code local settings
 .claude/
 
-# Embedded viewer assets (built from beadloom_visualiser)
-internal/viewer/dist/*
-!internal/viewer/dist/.gitkeep
+# Node build artifacts (source project, not the committed dist)
+beadloom_visualiser/dist/

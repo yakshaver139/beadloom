@@ -10,25 +10,18 @@ Beadloom reads a task graph from a Beads database, computes critical paths and p
 - [Beads](https://github.com/steveyegge/beads) (`bd` CLI) installed and initialized in your repo
 - [Claude Code](https://claude.ai/claude-code) CLI (`claude`) installed
 - `ANTHROPIC_API_KEY` environment variable (required for `infer-deps` command)
-- [Node.js](https://nodejs.org/) 18+ (only needed to rebuild the visualiser frontend with `make build-ui`)
 
 ## Installation
 
 ```bash
-git clone --recurse-submodules https://github.com/yakshaver139/beadloom
-make install
+go install github.com/yakshaver139/beadloom/cmd/beadloom@latest
 ```
 
-This builds the visualiser frontend, embeds it in the Go binary, and installs it. If you don't need the browser visualiser (`bdl view`), you can skip the frontend build:
+Or build from source:
 
 ```bash
-go install ./cmd/beadloom
-```
-
-If you already cloned without `--recurse-submodules`, fetch the visualiser submodule with:
-
-```bash
-git submodule update --init
+git clone https://github.com/yakshaver139/beadloom
+cd beadloom && make install
 ```
 
 ## Quick Start
@@ -224,6 +217,8 @@ beadloom view --port 4000              # custom server port (default 7171)
 beadloom view --filter "label=backend" # filter tasks before viewing
 ```
 
+![beadloom view](docs/view.png)
+
 The visualiser frontend is embedded in the Go binary — no Node.js runtime required. A single HTTP server serves both the API and the SPA. Subsequent runs detect the running server and just POST the latest plan.
 
 ## How It Works
@@ -320,10 +315,10 @@ beadloom/
 ## Development
 
 ```bash
-make build-ui   # build visualiser frontend into internal/viewer/dist/
-make build      # build-ui + compile Go binary
-make install    # build-ui + go install
-make test       # run tests (no Node.js required)
+make build      # compile Go binary (frontend is pre-embedded)
+make install    # go install
+make build-ui   # rebuild visualiser frontend (requires Node.js 18+)
+make test       # run tests
 make test-v     # run tests verbose
 make lint       # go vet
 make clean      # remove binary and temp dirs
