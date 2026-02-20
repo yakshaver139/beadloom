@@ -21,6 +21,7 @@ const (
 	StatusCompleted SessionStatus = "completed"
 	StatusFailed    SessionStatus = "failed"
 	StatusCancelled SessionStatus = "cancelled"
+	StatusSkipped   SessionStatus = "skipped"
 )
 
 // RunState is the persistent state of a beadloom execution.
@@ -30,6 +31,7 @@ type RunState struct {
 	Status      string                   `json:"status"` // "running", "completed", "failed", "cancelled"
 	CurrentWave int                      `json:"current_wave"`
 	TotalWaves  int                      `json:"total_waves"`
+	TotalTasks  int                      `json:"total_tasks"`
 	Sessions    map[string]*SessionState `json:"sessions"`
 
 	mu   sync.Mutex `json:"-"`
@@ -49,7 +51,7 @@ type SessionState struct {
 }
 
 // New creates a new RunState and persists it.
-func New(planID string, totalWaves int) (*RunState, error) {
+func New(planID string, totalWaves int, totalTasks int) (*RunState, error) {
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
@@ -59,6 +61,7 @@ func New(planID string, totalWaves int) (*RunState, error) {
 		StartedAt:  time.Now(),
 		Status:     "running",
 		TotalWaves: totalWaves,
+		TotalTasks: totalTasks,
 		Sessions:   make(map[string]*SessionState),
 		path:       filepath.Join(stateDir, stateFile),
 	}

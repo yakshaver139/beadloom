@@ -9,7 +9,7 @@ func TestNewAndLoad(t *testing.T) {
 	// Clean up
 	defer os.RemoveAll(".beadloom")
 
-	s, err := New("test-plan-001", 3)
+	s, err := New("test-plan-001", 3, 5)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestNewAndLoad(t *testing.T) {
 func TestUpdateSession(t *testing.T) {
 	defer os.RemoveAll(".beadloom")
 
-	s, err := New("test-plan-002", 1)
+	s, err := New("test-plan-002", 1, 3)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestUpdateSession(t *testing.T) {
 func TestActivePIDs(t *testing.T) {
 	defer os.RemoveAll(".beadloom")
 
-	s, err := New("test-plan-003", 1)
+	s, err := New("test-plan-003", 1, 3)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestExists(t *testing.T) {
 		t.Error("expected Exists()=false before creation")
 	}
 
-	New("test", 1)
+	New("test", 1, 1)
 
 	if !Exists() {
 		t.Error("expected Exists()=true after creation")
@@ -111,7 +111,7 @@ func TestExists(t *testing.T) {
 func TestSetWaveAndStatus(t *testing.T) {
 	defer os.RemoveAll(".beadloom")
 
-	s, err := New("test-plan-004", 5)
+	s, err := New("test-plan-004", 5, 10)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

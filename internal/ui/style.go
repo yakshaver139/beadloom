@@ -83,6 +83,8 @@ func StatusIcon(status string) string {
 		return Cyan("●")
 	case "failed":
 		return Red("✗")
+	case "skipped":
+		return Yellow("⊘")
 	case "cancelled":
 		return Dim("⊘")
 	default:

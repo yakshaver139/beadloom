@@ -30,6 +30,28 @@ func Generate(g *graph.TaskGraph, cpmResult *cpm.CPMResult, config PlanConfig) (
 		Config:       config,
 	}
 
+	// Build flat task lookup and dependency graph
+	plan.Tasks = make(map[string]*PlannedTask, g.TaskCount())
+	plan.Deps = TaskDeps{
+		Predecessors: make(map[string][]string, g.TaskCount()),
+		Successors:   make(map[string][]string, g.TaskCount()),
+	}
+	for id, preds := range g.RevAdj {
+		plan.Deps.Predecessors[id] = preds
+	}
+	for id, succs := range g.Adj {
+		plan.Deps.Successors[id] = succs
+	}
+	// Ensure every task has an entry even if it has no predecessors/successors
+	for id := range g.Tasks {
+		if _, ok := plan.Deps.Predecessors[id]; !ok {
+			plan.Deps.Predecessors[id] = nil
+		}
+		if _, ok := plan.Deps.Successors[id]; !ok {
+			plan.Deps.Successors[id] = nil
+		}
+	}
+
 	for _, wave := range cpmResult.Waves {
 		ew := ExecutionWave{
 			Index: wave.Index,
@@ -81,6 +103,12 @@ func Generate(g *graph.TaskGraph, cpmResult *cpm.CPMResult, config PlanConfig) (
 		}
 
 		plan.Waves = append(plan.Waves, ew)
+
+		// Populate flat task lookup (pointers into wave slice)
+		waveRef := &plan.Waves[len(plan.Waves)-1]
+		for i := range waveRef.Tasks {
+			plan.Tasks[waveRef.Tasks[i].TaskID] = &waveRef.Tasks[i]
+		}
 	}
 
 	return plan, nil

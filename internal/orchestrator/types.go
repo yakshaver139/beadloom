@@ -24,7 +24,15 @@ const (
 	StatusCompleted SessionStatus = "completed"
 	StatusFailed    SessionStatus = "failed"
 	StatusCancelled SessionStatus = "cancelled"
+	StatusSkipped   SessionStatus = "skipped"
 )
+
+// taskResult communicates task completion from worker goroutines to the main event loop.
+type taskResult struct {
+	TaskID   string
+	Err      error
+	Critical bool
+}
 
 // AgentSession tracks a running Claude agent.
 type AgentSession struct {

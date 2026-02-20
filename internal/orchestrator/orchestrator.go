@@ -48,108 +48,241 @@ func New(plan *planner.ExecutionPlan, wm *worktree.Manager, cfg Config) *Orchest
 	}
 }
 
-// Run executes the full plan wave by wave.
+// Run executes the plan using a dynamic dependency-tracking scheduler.
+// Each task is dispatched the moment all its predecessors complete,
+// eliminating wave-barrier delays.
 func (o *Orchestrator) Run(ctx context.Context) error {
 	o.ctx, o.cancelFunc = context.WithCancel(ctx)
 	defer o.cancelFunc()
 
 	// Initialize state
-	st, err := state.New(o.Plan.ID, o.Plan.TotalWaves)
+	st, err := state.New(o.Plan.ID, o.Plan.TotalWaves, o.Plan.TotalTasks)
 	if err != nil {
 		return fmt.Errorf("init state: %w", err)
 	}
 	o.State = st
 
-	for i, wave := range o.Plan.Waves {
-		if err := o.ctx.Err(); err != nil {
-			return fmt.Errorf("cancelled before wave %d: %w", i, err)
-		}
+	// Build pending count for each task (number of unfinished predecessors)
+	pending := make(map[string]int, len(o.Plan.Tasks))
+	for id := range o.Plan.Tasks {
+		pending[id] = len(o.Plan.Deps.Predecessors[id])
+	}
 
-		fmt.Fprintf(os.Stderr, "\n🌊 %s %d/%d (%d tasks)\n", ui.BoldCyan("Wave"), i+1, o.Plan.TotalWaves, len(wave.Tasks))
-		if err := o.State.SetWave(i); err != nil {
-			return fmt.Errorf("update wave state: %w", err)
-		}
+	done := make(chan taskResult, len(o.Plan.Tasks))
+	sem := make(chan struct{}, o.Config.MaxParallel)
+	var wtMu sync.Mutex // serializes worktree create/remove (git lock)
 
-		if err := o.executeWave(wave); err != nil {
-			if o.hasCriticalFailure(wave) {
-				o.State.SetStatus("failed")
-				return fmt.Errorf("critical path task failed in wave %d: %w", i, err)
-			}
-			fmt.Fprintf(os.Stderr, "  %s non-critical task(s) failed in wave %d: %v\n", ui.Yellow("⚠️  Warning:"), i, err)
+	totalTasks := len(o.Plan.Tasks)
+	inflight := 0
+	totalDone := 0 // completed + failed + skipped
+	finished := make(map[string]bool, totalTasks)
+
+	fmt.Fprintf(os.Stderr, "\n🚀 %s (%d tasks, max %d parallel)\n", ui.BoldCyan("Dynamic scheduler started"), totalTasks, o.Config.MaxParallel)
+
+	// Dispatch all root tasks (pending == 0)
+	for id, count := range pending {
+		if count == 0 {
+			task := o.Plan.Tasks[id]
+			fmt.Fprintf(os.Stderr, "  ▶ %s %s\n", ui.TaskPrefix(task.TaskID), task.Title)
+			o.dispatch(*task, sem, &wtMu, done)
+			inflight++
 		}
 	}
 
+	// Main event loop
+	for totalDone < totalTasks {
+		if err := o.ctx.Err(); err != nil {
+			o.State.SetStatus("cancelled")
+			return fmt.Errorf("cancelled: %w", err)
+		}
+
+		// If nothing is in flight but tasks remain, they're unreachable
+		if inflight == 0 {
+			for id := range pending {
+				if !finished[id] {
+					o.markSkipped(id)
+					finished[id] = true
+					totalDone++
+				}
+			}
+			break
+		}
+
+		result := <-done
+		inflight--
+		finished[result.TaskID] = true
+		totalDone++
+
+		if result.Err != nil {
+			// Task failed
+			if result.Critical {
+				// Critical failure: cancel everything, drain inflight
+				fmt.Fprintf(os.Stderr, "  💀 %s critical task failed, cancelling run\n", ui.TaskPrefix(result.TaskID))
+				o.cancelFunc()
+				for inflight > 0 {
+					<-done
+					inflight--
+					totalDone++
+				}
+				o.State.SetStatus("failed")
+				return fmt.Errorf("critical task %s failed: %w", result.TaskID, result.Err)
+			}
+
+			// Non-critical failure: cascade-skip successors
+			fmt.Fprintf(os.Stderr, "  %s non-critical task %s failed: %v\n", ui.Yellow("⚠️  Warning:"), result.TaskID, result.Err)
+			skipped := o.cascadeSkip(result.TaskID, finished, pending)
+			totalDone += skipped
+			o.updateCurrentWave()
+		} else {
+			// Task succeeded: update wave progress, then dispatch ready successors
+			o.updateCurrentWave()
+			for _, succID := range o.Plan.Deps.Successors[result.TaskID] {
+				if finished[succID] {
+					continue
+				}
+				pending[succID]--
+				if pending[succID] == 0 {
+					task := o.Plan.Tasks[succID]
+					fmt.Fprintf(os.Stderr, "  ▶ %s %s\n", ui.TaskPrefix(task.TaskID), task.Title)
+					o.dispatch(*task, sem, &wtMu, done)
+					inflight++
+				}
+			}
+		}
+	}
+
+	o.updateCurrentWave()
 	o.State.SetStatus("completed")
 	return nil
 }
 
-// executeWave runs all tasks in a wave concurrently (up to maxParallel).
-// Worktrees are created and cleaned up sequentially to avoid git lock contention,
-// while agents run in parallel.
-func (o *Orchestrator) executeWave(wave planner.ExecutionWave) error {
-	// Phase 1: create all worktrees sequentially (git locks prevent parallel creation)
-	worktrees := make(map[string]string, len(wave.Tasks))
-	for _, task := range wave.Tasks {
-		fmt.Fprintf(os.Stderr, "  ▶ %s %s\n", ui.TaskPrefix(task.TaskID), task.Title)
+// dispatch launches a task in a goroutine: acquire semaphore, create worktree,
+// execute, cleanup worktree on success, send result on done channel.
+func (o *Orchestrator) dispatch(task planner.PlannedTask, sem chan struct{}, wtMu *sync.Mutex, done chan<- taskResult) {
+	go func() {
+		sem <- struct{}{}        // acquire semaphore
+		defer func() { <-sem }() // release semaphore
+
+		// Create worktree (serialized via wtMu)
+		wtMu.Lock()
 		wtPath, err := o.Worktrees.Create(task.WorktreeName, task.BranchName)
+		wtMu.Unlock()
 		if err != nil {
 			o.updateSession(task.TaskID, StatusFailed, 0, "")
 			fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red("❌ Task error:"), fmt.Errorf("task %s: create worktree: %w", task.TaskID, err))
-			continue
+			done <- taskResult{TaskID: task.TaskID, Err: err, Critical: o.isTaskCritical(task.TaskID)}
+			return
 		}
-		worktrees[task.TaskID] = wtPath
-	}
 
-	// Phase 2: spawn agents in parallel
-	sem := make(chan struct{}, o.Config.MaxParallel)
-	var wg sync.WaitGroup
-	errs := make(chan error, len(wave.Tasks))
+		// Execute the task
+		err = o.executeTask(task, wtPath)
 
-	for _, task := range wave.Tasks {
-		wtPath, ok := worktrees[task.TaskID]
-		if !ok {
-			errs <- fmt.Errorf("task %s: worktree creation failed", task.TaskID)
-			continue
-		}
-		task := task // capture
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}        // acquire
-			defer func() { <-sem }() // release
-
-			if err := o.executeTask(task, wtPath); err != nil {
-				errs <- fmt.Errorf("task %s: %w", task.TaskID, err)
-			}
-		}()
-	}
-
-	wg.Wait()
-	close(errs)
-
-	var firstErr error
-	for err := range errs {
-		if firstErr == nil {
-			firstErr = err
-		}
-		fmt.Fprintf(os.Stderr, "  %s %v\n", ui.Red("❌ Task error:"), err)
-	}
-
-	// Phase 3: cleanup completed worktrees sequentially (git locks prevent parallel removal)
-	for _, task := range wave.Tasks {
-		o.mu.Lock()
-		s := o.sessions[task.TaskID]
-		completed := s != nil && s.Status == StatusCompleted
-		o.mu.Unlock()
-
-		if completed {
+		// Cleanup worktree on success (serialized via wtMu)
+		if err == nil {
+			wtMu.Lock()
 			if rmErr := o.Worktrees.Remove(task.WorktreeName); rmErr != nil {
 				fmt.Fprintf(os.Stderr, "  %s failed to remove worktree %s: %v\n", ui.Yellow("⚠️  Warning:"), task.WorktreeName, rmErr)
 			}
+			wtMu.Unlock()
+		}
+
+		done <- taskResult{TaskID: task.TaskID, Err: err, Critical: o.isTaskCritical(task.TaskID)}
+	}()
+}
+
+// cascadeSkip performs BFS through the successor graph from a failed task,
+// marking all transitively dependent tasks as skipped. Returns count of skipped tasks.
+func (o *Orchestrator) cascadeSkip(failedID string, finished map[string]bool, pending map[string]int) int {
+	skipped := 0
+	queue := []string{}
+
+	// Seed the queue with direct successors of the failed task
+	for _, succID := range o.Plan.Deps.Successors[failedID] {
+		if !finished[succID] {
+			queue = append(queue, succID)
 		}
 	}
 
-	return firstErr
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+
+		if finished[id] {
+			continue
+		}
+
+		o.markSkipped(id)
+		finished[id] = true
+		skipped++
+
+		// Add successors of the skipped task
+		for _, succID := range o.Plan.Deps.Successors[id] {
+			if !finished[succID] {
+				queue = append(queue, succID)
+			}
+		}
+	}
+
+	return skipped
+}
+
+// markSkipped records a task as skipped in both session state and persistent state.
+func (o *Orchestrator) markSkipped(taskID string) {
+	now := time.Now()
+	o.mu.Lock()
+	o.sessions[taskID] = &AgentSession{
+		TaskID:     taskID,
+		Status:     StatusSkipped,
+		FinishedAt: now,
+	}
+	o.mu.Unlock()
+
+	st := &state.SessionState{
+		Status:     state.StatusSkipped,
+		FinishedAt: &now,
+	}
+	o.State.UpdateSession(taskID, st)
+	fmt.Fprintf(os.Stderr, "  ⊘ %s %s\n", ui.TaskPrefix(taskID), ui.Yellow("Skipped (predecessor failed)"))
+}
+
+// updateCurrentWave computes the current wave from task session states and
+// persists it. The wave is the index of the first wave with incomplete tasks,
+// or the last wave index when all are done.
+func (o *Orchestrator) updateCurrentWave() {
+	wave := 0
+	for _, w := range o.Plan.Waves {
+		allDone := true
+		for _, task := range w.Tasks {
+			ss := o.State.GetSession(task.TaskID)
+			if ss == nil {
+				allDone = false
+				break
+			}
+			switch ss.Status {
+			case state.StatusCompleted, state.StatusFailed, state.StatusSkipped:
+				// terminal
+			default:
+				allDone = false
+			}
+			if !allDone {
+				break
+			}
+		}
+		if !allDone {
+			wave = w.Index
+			break
+		}
+		wave = w.Index
+	}
+	o.State.SetWave(wave)
+}
+
+// isTaskCritical checks if a task is on the critical path.
+func (o *Orchestrator) isTaskCritical(taskID string) bool {
+	if task, ok := o.Plan.Tasks[taskID]; ok {
+		return task.IsCritical
+	}
+	return false
 }
 
 // executeTask runs a single task: spawn agent in the given worktree and wait.
@@ -214,9 +347,6 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 		LogFile:    s.LogFile,
 	}
 	o.State.UpdateSession(task.TaskID, st)
-
-	// Worktree cleanup is handled sequentially in executeWave Phase 3
-	// to avoid git lock contention from concurrent bd worktree remove calls.
 
 	if status == StatusFailed {
 		return fmt.Errorf("agent exited with code %d", exitCode)
@@ -316,20 +446,6 @@ func (o *Orchestrator) updateSession(taskID string, status SessionStatus, exitCo
 		ExitCode:   exitCode,
 	}
 	o.State.UpdateSession(taskID, st)
-}
-
-func (o *Orchestrator) hasCriticalFailure(wave planner.ExecutionWave) bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	for _, task := range wave.Tasks {
-		if task.IsCritical {
-			if s, ok := o.sessions[task.TaskID]; ok && s.Status == StatusFailed {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // Cancel aborts all running sessions.

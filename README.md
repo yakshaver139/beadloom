@@ -55,37 +55,41 @@ bd-005  Integration tests           (blocked by bd-002, bd-003)
 bd-006  Deploy pipeline             (blocked by bd-005)
 ```
 
-Running `beadloom plan` produces:
+Running `bdl plan` produces:
 
 ```
-Beadloom Execution Plan
-=======================
+🎯 Beadloom Execution Plan
+═══════════════════════════
 
-Tasks: 6 open, 5 blocked
-Critical path: bd-001 -> bd-002 -> bd-005 -> bd-006 (4 tasks, est. 4 units)
-Waves: 4
-Max parallelism: 4 (2 tasks in widest wave)
+Tasks:     7 open, 6 blocked
+⚡ Critical path: bvis-o3t → bvis-o3t.1 → bvis-o3t.2 → bvis-o3t.3 → bvis-o3t.5 → bvis-o3t.6 (6 tasks, est. 5 units)
+Waves:     5
+Parallel:  4 (2 tasks in widest wave)
 
-Wave 1 (1 task, independent):
-  bd-001   Setup database schema            * critical
+🌊 Wave 1 (1 tasks, independent):
+  bvis-o3t  Beadloom Graph Visualiser (React)  ⚡ critical
 
-Wave 2 (2 tasks, after wave 1):
-  bd-002   Build API endpoints              * critical
-  bd-003   Build frontend components
+🌊 Wave 2 (1 tasks, after wave 1):
+  bvis-o3t.1  Define Beadloom graph JSON contract  ⚡ critical
 
-Wave 3 (2 tasks, after wave 2):
-  bd-004   Write API docs
-  bd-005   Integration tests                * critical
+🌊 Wave 3 (2 tasks, after wave 2):
+  bvis-o3t.2  Build minimal API endpoint for graph JSON  ⚡ critical
+  bvis-o3t.3  Build React UI for graph + CPA display  ⚡ critical
 
-Wave 4 (1 task, after wave 3):
-  bd-006   Deploy pipeline                  * critical
+🌊 Wave 4 (2 tasks, after wave 3):
+  bvis-o3t.5  Integration tests (API + UI)  ⚡ critical
+  bvis-o3t.4  Write usage docs
+
+🌊 Wave 5 (1 tasks, after wave 4):
+  bvis-o3t.6  Deploy pipeline  ⚡ critical
 ```
 
 Beadloom identifies that:
 - **Wave 1** must run first (schema has no dependencies)
-- **Wave 2** can run API and frontend **in parallel** (both only depend on schema)
-- **Wave 3** can run docs and integration tests **in parallel**
-- **Wave 4** is the final deploy step
+- **Wave 2** must run JSON contract for graph next (only depends on schema)
+- **Wave 3** can run API and UI **in parallel**
+- **Wave 4** can write integration tests and docs **in parallel**
+-- **Wave 5** The deployment pipeline is the final step
 - The **critical path** is schema -> API -> tests -> deploy (any delay here delays everything)
 
 Running `beadloom run --max-parallel 2` then:
@@ -99,43 +103,31 @@ Running `beadloom run --max-parallel 2` then:
 During execution, `beadloom status` shows:
 
 ```
-Beadloom -- Wave 2/4 -- 1 of 6 tasks complete [3m 22s elapsed]
+   |  o  o  o  o  o  o  o  o  |
+   |  |  |  |  |  |  |  |  |  |
+   |==========================|
+   |  B  E  A  D  L  O  O  M  |
+   |==========================|
+   |  |  |  |  |  |  |  |  |  |
+   |  o  o  o  o  o  o  o  o  |
+   +--------------------------+
+   🧵 Parallel task orchestration
 
-  WAVE 1 (done)
-    > bd-001   Setup database schema            *  [2m 14s]
+🚀 Beadloom: executing 7 tasks in 5 waves
 
-  WAVE 2 (running)
-    o bd-002   Build API endpoints              *  [running 1m 08s]
-    o bd-003   Build frontend components           [running 1m 05s]
+🚀 Dynamic scheduler started (7 tasks, max 4 parallel)
+  ▶ [bvis-o3t] Beadloom Graph Visualiser (React)
+  [bvis-o3t] 🔧 $ List current worktree contents
+  [bvis-o3t] 🔧 $ Check recent git history
+  [bvis-o3t] 🔧 $ Show full issue details
+  [bvis-o3t] 📖 Reading beadloom_visualiser/.worktrees/bvis-o3t/README.md
+  [bvis-o3t] 🔧 $ Show all child issue details
+  [bvis-o3t] 🔧 $ Show issues ready to work on
+  [bvis-o3t] 🔧 EnterPlanMode
+  [bvis-o3t] 💬 Let me explore the codebase and understand what we're working with, then design the implementation.
+  [bvis-o3t] 🤖 Spawning agent: Explore beadloom project structure
+  [bvis-o3t] 🔧 $ List all files including hidden in worktree root
 
-  WAVE 3 (blocked)
-    . bd-004   Write API docs
-    . bd-005   Integration tests                *
-
-  WAVE 4 (blocked)
-    . bd-006   Deploy pipeline                  *
-
-
-sample output: 
-
-
-🚀 Beadloom: executing 7 tasks in 4 waves
-```
-🌊 Wave 1/4 (2 tasks)
-  ▶ [beadloom_vizualiser-0e7.1] Setup PostgreSQL schema
-  ▶ [beadloom_vizualiser-0e7] Task Visualiser Service
-  [beadloom_vizualiser-0e7] 🔧 $ List project root contents
-  [beadloom_vizualiser-0e7.1] 🔧 $ List project files
-  [beadloom_vizualiser-0e7] 🔧 $ Check recent git history
-  [beadloom_vizualiser-0e7.1] 🔧 $ Check go.mod contents
-  [beadloom_vizualiser-0e7.1] 🔧 $ Mark task as in progress
-  [beadloom_vizualiser-0e7] 📖 Reading /Users/joshharrison/Documents/beadloom_vizualiser/.worktrees/beadloom_vizualiser-0e7/AGENTS.md
-  [beadloom_vizualiser-0e7.1] 🔧 $ Check beads status
-  [beadloom_vizualiser-0e7.1] 📖 Reading /Users/joshharrison/Documents/beadloom_vizualiser/.worktrees/beadloom_vizualiser-0e7.1/AGENTS.md
-  [beadloom_vizualiser-0e7] 🔧 $ Show the main task details
-```
-
-* = critical path
 ```
 
 ## Commands

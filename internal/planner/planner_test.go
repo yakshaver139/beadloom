@@ -60,6 +60,30 @@ func TestGenerate_BasicPlan(t *testing.T) {
 	if len(plan.Waves[1].DependsOn) != 1 || plan.Waves[1].DependsOn[0] != 0 {
 		t.Errorf("wave 1 should depend on wave 0")
 	}
+
+	// Check flat task lookup
+	if len(plan.Tasks) != 3 {
+		t.Errorf("expected 3 tasks in map, got %d", len(plan.Tasks))
+	}
+	for _, id := range []string{"a", "b", "c"} {
+		if _, ok := plan.Tasks[id]; !ok {
+			t.Errorf("expected task %s in Tasks map", id)
+		}
+	}
+
+	// Check dependency graph
+	if len(plan.Deps.Predecessors["a"]) != 0 {
+		t.Errorf("expected a to have no predecessors, got %v", plan.Deps.Predecessors["a"])
+	}
+	if len(plan.Deps.Predecessors["b"]) != 1 || plan.Deps.Predecessors["b"][0] != "a" {
+		t.Errorf("expected b predecessors=[a], got %v", plan.Deps.Predecessors["b"])
+	}
+	if len(plan.Deps.Successors["a"]) != 1 || plan.Deps.Successors["a"][0] != "b" {
+		t.Errorf("expected a successors=[b], got %v", plan.Deps.Successors["a"])
+	}
+	if len(plan.Deps.Successors["c"]) != 0 {
+		t.Errorf("expected c to have no successors, got %v", plan.Deps.Successors["c"])
+	}
 }
 
 func TestGenerate_WorktreeNaming(t *testing.T) {
@@ -143,6 +167,52 @@ func TestRenderPrompt_NonCritical(t *testing.T) {
 
 	if strings.Contains(prompt, "CRITICAL PATH") {
 		t.Error("non-critical task should not mention critical path")
+	}
+}
+
+func TestGenerate_DepsMatchGraph(t *testing.T) {
+	// Diamond: a -> b, a -> c, b -> d, c -> d
+	raw := []bd.RawTask{
+		{ID: "a", Title: "A", Status: "open", Blocks: []string{"b", "c"}},
+		{ID: "b", Title: "B", Status: "open", BlockedBy: []string{"a"}, Blocks: []string{"d"}},
+		{ID: "c", Title: "C", Status: "open", BlockedBy: []string{"a"}, Blocks: []string{"d"}},
+		{ID: "d", Title: "D", Status: "open", BlockedBy: []string{"b", "c"}},
+	}
+
+	g, err := graph.BuildFromRaw(raw)
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	result, err := cpm.Analyze(g)
+	if err != nil {
+		t.Fatalf("cpm analyze: %v", err)
+	}
+
+	plan, err := Generate(g, result, PlanConfig{WorktreeDir: ".wt"})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	// Verify flat task lookup has all 4 tasks
+	if len(plan.Tasks) != 4 {
+		t.Errorf("expected 4 tasks in map, got %d", len(plan.Tasks))
+	}
+
+	// Verify predecessors
+	if len(plan.Deps.Predecessors["a"]) != 0 {
+		t.Errorf("a should have no predecessors")
+	}
+	if len(plan.Deps.Predecessors["d"]) != 2 {
+		t.Errorf("d should have 2 predecessors, got %d", len(plan.Deps.Predecessors["d"]))
+	}
+
+	// Verify successors
+	if len(plan.Deps.Successors["a"]) != 2 {
+		t.Errorf("a should have 2 successors, got %d", len(plan.Deps.Successors["a"]))
+	}
+	if len(plan.Deps.Successors["d"]) != 0 {
+		t.Errorf("d should have no successors")
 	}
 }
 

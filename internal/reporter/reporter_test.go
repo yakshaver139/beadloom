@@ -112,6 +112,42 @@ func TestSummary(t *testing.T) {
 	}
 }
 
+func TestPrintStatus_SkippedTask(t *testing.T) {
+	plan := makePlan()
+	st := makeState()
+	now := time.Now()
+	st.Sessions["b"] = &state.SessionState{
+		Status:     state.StatusSkipped,
+		FinishedAt: &now,
+	}
+	rpt := New(plan, st)
+
+	var buf bytes.Buffer
+	rpt.PrintStatus(&buf)
+
+	output := buf.String()
+	if !strings.Contains(output, "skipped") {
+		t.Error("expected output to contain 'skipped' for skipped task")
+	}
+}
+
+func TestSummary_WithSkipped(t *testing.T) {
+	plan := makePlan()
+	st := makeState()
+	st.Status = "completed"
+	now := time.Now()
+	st.Sessions["b"] = &state.SessionState{
+		Status:     state.StatusSkipped,
+		FinishedAt: &now,
+	}
+	rpt := New(plan, st)
+
+	summary := rpt.Summary()
+	if !strings.Contains(summary, "1 skipped") {
+		t.Error("summary should contain skipped count")
+	}
+}
+
 func TestSummary_WithFailures(t *testing.T) {
 	plan := makePlan()
 	st := makeState()

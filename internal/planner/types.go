@@ -2,15 +2,23 @@ package planner
 
 import "time"
 
+// TaskDeps holds per-task predecessor and successor lists for dependency tracking.
+type TaskDeps struct {
+	Predecessors map[string][]string `json:"predecessors"`
+	Successors   map[string][]string `json:"successors"`
+}
+
 // ExecutionPlan is the complete plan for executing tasks.
 type ExecutionPlan struct {
-	ID           string          `json:"id"`
-	CreatedAt    time.Time       `json:"created_at"`
-	TotalTasks   int             `json:"total_tasks"`
-	TotalWaves   int             `json:"total_waves"`
-	CriticalPath []string        `json:"critical_path"`
-	Waves        []ExecutionWave `json:"waves"`
-	Config       PlanConfig      `json:"config"`
+	ID           string                 `json:"id"`
+	CreatedAt    time.Time              `json:"created_at"`
+	TotalTasks   int                    `json:"total_tasks"`
+	TotalWaves   int                    `json:"total_waves"`
+	CriticalPath []string               `json:"critical_path"`
+	Waves        []ExecutionWave        `json:"waves"`
+	Tasks        map[string]*PlannedTask `json:"tasks"`
+	Deps         TaskDeps               `json:"deps"`
+	Config       PlanConfig             `json:"config"`
 }
 
 // ExecutionWave is a group of tasks that execute in parallel.

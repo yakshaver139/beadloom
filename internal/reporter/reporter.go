@@ -46,11 +46,12 @@ func (r *Reporter) PrintStatus(w io.Writer) {
 		}
 	}
 
+	currentWave := r.computeCurrentWave()
 	fmt.Fprintf(w, "%s %s — %s %d/%d — %d of %d tasks complete",
 		ui.BoldCyan("🧵 Beadloom"),
 		ui.Dim(""),
 		ui.Bold("Wave"),
-		r.State.CurrentWave+1, r.State.TotalWaves, completed, r.Plan.TotalTasks)
+		currentWave+1, r.State.TotalWaves, completed, r.Plan.TotalTasks)
 	if failed > 0 {
 		fmt.Fprintf(w, " %s", ui.Red(fmt.Sprintf("(%d failed)", failed)))
 	}
@@ -67,11 +68,56 @@ func (r *Reporter) PrintStatus(w io.Writer) {
 	}
 }
 
+// computeCurrentWave derives the current wave index from session states.
+// Returns the index of the first wave that has incomplete tasks, or the last
+// wave index if all waves are done.
+func (r *Reporter) computeCurrentWave() int {
+	for _, wave := range r.Plan.Waves {
+		for _, task := range wave.Tasks {
+			ss := r.State.GetSession(task.TaskID)
+			if ss == nil {
+				return wave.Index
+			}
+			switch ss.Status {
+			case state.StatusCompleted, state.StatusFailed, state.StatusSkipped:
+				// terminal — keep checking
+			default:
+				return wave.Index
+			}
+		}
+	}
+	// All waves complete — return last wave index
+	if len(r.Plan.Waves) > 0 {
+		return r.Plan.Waves[len(r.Plan.Waves)-1].Index
+	}
+	return 0
+}
+
 func (r *Reporter) waveStatus(waveIndex int) string {
-	if waveIndex < r.State.CurrentWave {
+	// Derive status from session states instead of CurrentWave comparison
+	wave := r.Plan.Waves[waveIndex]
+	allDone := true
+	anyRunning := false
+	for _, task := range wave.Tasks {
+		ss := r.State.GetSession(task.TaskID)
+		if ss == nil {
+			allDone = false
+			continue
+		}
+		switch ss.Status {
+		case state.StatusCompleted, state.StatusFailed, state.StatusSkipped:
+			// terminal state
+		case state.StatusRunning:
+			anyRunning = true
+			allDone = false
+		default:
+			allDone = false
+		}
+	}
+	if allDone {
 		return "done"
 	}
-	if waveIndex == r.State.CurrentWave {
+	if anyRunning {
 		return "running"
 	}
 	return "blocked"
@@ -99,6 +145,9 @@ func (r *Reporter) printTask(w io.Writer, task planner.PlannedTask) {
 			if ss.StartedAt != nil && ss.FinishedAt != nil {
 				dur = ui.Red(fmt.Sprintf("[failed after %s]", ss.FinishedAt.Sub(*ss.StartedAt).Truncate(time.Second)))
 			}
+		case state.StatusSkipped:
+			status = "skipped"
+			dur = ui.Yellow("[skipped]")
 		case state.StatusCancelled:
 			status = "cancelled"
 			dur = ui.Dim("[cancelled]")
@@ -145,7 +194,7 @@ func (r *Reporter) JSON() ([]byte, error) {
 	o := output{
 		PlanID:      r.Plan.ID,
 		Status:      r.State.Status,
-		CurrentWave: r.State.CurrentWave,
+		CurrentWave: r.computeCurrentWave(),
 		TotalWaves:  r.State.TotalWaves,
 		TotalTasks:  r.Plan.TotalTasks,
 		Elapsed:     time.Since(r.StartTime).Truncate(time.Second).String(),
@@ -177,12 +226,15 @@ func (r *Reporter) Summary() string {
 
 	completed := 0
 	failed := 0
+	skipped := 0
 	for _, ss := range r.State.Sessions {
 		switch ss.Status {
 		case state.StatusCompleted:
 			completed++
 		case state.StatusFailed:
 			failed++
+		case state.StatusSkipped:
+			skipped++
 		}
 	}
 
@@ -200,9 +252,10 @@ func (r *Reporter) Summary() string {
 	fmt.Fprintf(&b, "%s\n", ui.Cyan("═════════════════════════"))
 	fmt.Fprintf(&b, "Plan:      %s\n", ui.Dim(r.Plan.ID))
 	fmt.Fprintf(&b, "Duration:  %s\n", ui.Bold(elapsed))
-	fmt.Fprintf(&b, "Tasks:     %s, %s, %d total\n",
+	fmt.Fprintf(&b, "Tasks:     %s, %s, %s, %d total\n",
 		ui.Green(fmt.Sprintf("%d completed", completed)),
 		ui.Red(fmt.Sprintf("%d failed", failed)),
+		ui.Yellow(fmt.Sprintf("%d skipped", skipped)),
 		r.Plan.TotalTasks)
 	fmt.Fprintf(&b, "Status:    %s\n", statusText)
 
