@@ -156,6 +156,7 @@ func planCmd() *cobra.Command {
 
 func runCmd() *cobra.Command {
 	var flagQuiet bool
+	var flagAutomerge bool
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -224,6 +225,7 @@ func runCmd() *cobra.Command {
 				MaxParallel:    flagMaxParallel,
 				Safe:           flagSafe,
 				Quiet:          flagQuiet,
+				Automerge:      flagAutomerge,
 				TimeoutPerTask: timeout,
 				WorktreeDir:    flagWorktreeDir,
 				DbPath:         flagDB,
@@ -251,6 +253,7 @@ func runCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Show plan without executing")
 	cmd.Flags().StringVar(&flagFilter, "filter", "", "Filter tasks")
 	cmd.Flags().BoolVarP(&flagQuiet, "quiet", "q", false, "Suppress streaming agent output")
+	cmd.Flags().BoolVar(&flagAutomerge, "automerge", false, "Merge branches at wave boundaries (wave-barrier mode)")
 
 	return cmd
 }

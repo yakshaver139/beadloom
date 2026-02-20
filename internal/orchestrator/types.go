@@ -9,6 +9,7 @@ type Config struct {
 	MaxParallel    int
 	Safe           bool
 	Quiet          bool
+	Automerge      bool
 	TimeoutPerTask time.Duration
 	WorktreeDir    string
 	DbPath         string

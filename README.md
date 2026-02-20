@@ -158,6 +158,7 @@ beadloom run --plan plan.json          # run from saved plan
 beadloom run --max-parallel 2          # limit concurrent agents
 beadloom run --timeout 45m             # per-task timeout
 beadloom run --dry-run                 # show what would happen
+beadloom run --automerge               # merge branches at wave boundaries
 ```
 
 ### `beadloom status`
@@ -226,7 +227,7 @@ The visualiser frontend is embedded in the Go binary — no Node.js runtime requ
 1. **Graph Building** -- Queries `bd list --json --status open` for all open tasks, then `bd dep list <id>` for each to build a directed acyclic graph (DAG). Detects cycles defensively.
 2. **Critical Path Analysis** -- Runs the Critical Path Method (CPM): Kahn's topological sort, forward pass (earliest start/finish), backward pass (latest start/finish), slack calculation. Tasks with zero slack form the critical path.
 3. **Wave Computation** -- Groups tasks by earliest start time into parallel waves. Tasks in the same wave have no inter-dependencies and can run concurrently.
-4. **Execution** -- For each wave, creates git worktrees via `bd worktree create` (which sets up beads database redirects automatically), spawns Claude Code sessions with generated prompts, and waits for completion. Critical path failures halt the pipeline; non-critical failures log warnings and continue.
+4. **Execution** -- By default, uses a dynamic scheduler that dispatches tasks the moment all predecessors complete. With `--automerge`, switches to wave-barrier mode: all tasks in wave N complete, then their branches are squash-merged into the current branch before wave N+1 starts. Creates git worktrees via `bd worktree create` (which sets up beads database redirects automatically) and spawns Claude Code sessions with generated prompts. Critical path failures halt the pipeline; non-critical failures log warnings and continue.
 5. **Reporting** -- Real-time terminal status, JSON output, persistent state in `.beadloom/state.json` (works across terminal sessions).
 
 ## Global Flags
@@ -306,7 +307,7 @@ beadloom/
 
 ## Edge Cases
 
-- **Merge conflicts**: Each worktree gets its own branch (`beadloom/<task-id>`), so no conflicts during execution. Conflicts arise at merge time -- beadloom does not auto-merge; use your normal PR workflow.
+- **Merge conflicts**: Each worktree gets its own branch (`beadloom/<task-id>`), so no conflicts during execution. Conflicts arise at merge time. With `--automerge`, conflicts at a wave boundary halt the run so you can resolve manually. Without it, use `beadloom merge` or your normal PR workflow after the run.
 - **Agent failures**: Critical path failures halt the pipeline. Non-critical failures log warnings and continue. Failed task worktrees are preserved for inspection.
 - **Database contention**: All worktrees share the same beads database (via `bd worktree` redirects). `bd` uses file-level locking for writes.
 - **Resource limits**: Each Claude session consumes significant memory/API quota. Default of 4 concurrent sessions is conservative.

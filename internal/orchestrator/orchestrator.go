@@ -48,9 +48,9 @@ func New(plan *planner.ExecutionPlan, wm *worktree.Manager, cfg Config) *Orchest
 	}
 }
 
-// Run executes the plan using a dynamic dependency-tracking scheduler.
-// Each task is dispatched the moment all its predecessors complete,
-// eliminating wave-barrier delays.
+// Run executes the plan. When Automerge is enabled, it uses wave-barrier
+// execution (all tasks in wave N complete and merge before wave N+1 starts).
+// Otherwise it uses the dynamic dependency-tracking scheduler.
 func (o *Orchestrator) Run(ctx context.Context) error {
 	o.ctx, o.cancelFunc = context.WithCancel(ctx)
 	defer o.cancelFunc()
@@ -74,6 +74,98 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}
 	}()
 
+	if o.Config.Automerge {
+		return o.runWaveMode()
+	}
+	return o.runDynamic()
+}
+
+// runWaveMode executes waves sequentially with automerge at wave boundaries.
+// All tasks in wave N run in parallel, then their branches are squash-merged
+// into the current branch before wave N+1 starts.
+func (o *Orchestrator) runWaveMode() error {
+	totalTasks := len(o.Plan.Tasks)
+	done := make(chan taskResult, totalTasks)
+	sem := make(chan struct{}, o.Config.MaxParallel)
+	var wtMu sync.Mutex
+
+	fmt.Fprintf(os.Stderr, "\n🚀 %s (%d tasks, %d waves, max %d parallel, automerge on)\n",
+		ui.BoldCyan("Wave-barrier scheduler started"), totalTasks, len(o.Plan.Waves), o.Config.MaxParallel)
+
+	finished := make(map[string]bool, totalTasks)
+	pending := make(map[string]int, totalTasks)
+	for id := range o.Plan.Tasks {
+		pending[id] = len(o.Plan.Deps.Predecessors[id])
+	}
+
+	for _, wave := range o.Plan.Waves {
+		if err := o.ctx.Err(); err != nil {
+			o.State.SetStatus("cancelled")
+			return fmt.Errorf("cancelled: %w", err)
+		}
+
+		fmt.Fprintf(os.Stderr, "\n🌊 %s %d (%d tasks)\n", ui.BoldWhite("Wave"), wave.Index+1, len(wave.Tasks))
+
+		// Dispatch all tasks in this wave
+		inflight := 0
+		for _, task := range wave.Tasks {
+			if finished[task.TaskID] {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  ▶ %s %s\n", ui.TaskPrefix(task.TaskID), task.Title)
+			o.dispatch(task, sem, &wtMu, done)
+			inflight++
+		}
+
+		// Wait for all tasks in this wave to complete
+		completedIDs := make(map[string]bool)
+		for inflight > 0 {
+			result := <-done
+			inflight--
+			finished[result.TaskID] = true
+
+			if result.Err != nil {
+				if result.Critical {
+					fmt.Fprintf(os.Stderr, "  💀 %s critical task failed, cancelling run\n", ui.TaskPrefix(result.TaskID))
+					o.cancelFunc()
+					for inflight > 0 {
+						<-done
+						inflight--
+					}
+					o.State.SetStatus("failed")
+					return fmt.Errorf("critical task %s failed: %w", result.TaskID, result.Err)
+				}
+				fmt.Fprintf(os.Stderr, "  %s non-critical task %s failed: %v\n", ui.Yellow("⚠️  Warning:"), result.TaskID, result.Err)
+				skipped := o.cascadeSkip(result.TaskID, finished, pending)
+				_ = skipped
+			} else {
+				completedIDs[result.TaskID] = true
+			}
+		}
+
+		o.updateCurrentWave()
+
+		// Automerge completed branches from this wave
+		if len(completedIDs) > 0 {
+			fmt.Fprintf(os.Stderr, "\n🧵 Merging wave %d branches...\n", wave.Index+1)
+			merged, err := o.mergeWaveBranches(wave, completedIDs)
+			if err != nil {
+				o.State.SetStatus("failed")
+				return fmt.Errorf("automerge wave %d: %w", wave.Index+1, err)
+			}
+			fmt.Fprintf(os.Stderr, "  🏁 Merged %d/%d branches from wave %d\n", merged, len(completedIDs), wave.Index+1)
+		}
+	}
+
+	o.updateCurrentWave()
+	o.State.SetStatus("completed")
+	return nil
+}
+
+// runDynamic executes the plan using a dynamic dependency-tracking scheduler.
+// Each task is dispatched the moment all its predecessors complete,
+// eliminating wave-barrier delays.
+func (o *Orchestrator) runDynamic() error {
 	// Build pending count for each task (number of unfinished predecessors)
 	pending := make(map[string]int, len(o.Plan.Tasks))
 	for id := range o.Plan.Tasks {
