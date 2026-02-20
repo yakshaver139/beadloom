@@ -2,7 +2,11 @@ package state
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/joshharrison/beadloom/internal/planner"
 )
 
 func TestNewAndLoad(t *testing.T) {
@@ -129,5 +133,227 @@ func TestSetWaveAndStatus(t *testing.T) {
 	}
 	if loaded.Status != "completed" {
 		t.Errorf("expected completed, got %s", loaded.Status)
+	}
+}
+
+func testPlan(id string) *planner.ExecutionPlan {
+	return &planner.ExecutionPlan{
+		ID:         id,
+		CreatedAt:  time.Now(),
+		TotalTasks: 2,
+		TotalWaves: 1,
+		Waves: []planner.ExecutionWave{
+			{Index: 0, Tasks: []planner.PlannedTask{
+				{TaskID: "t1", Title: "Task 1"},
+				{TaskID: "t2", Title: "Task 2"},
+			}},
+		},
+		Tasks: map[string]*planner.PlannedTask{
+			"t1": {TaskID: "t1", Title: "Task 1"},
+			"t2": {TaskID: "t2", Title: "Task 2"},
+		},
+	}
+}
+
+func TestSavePlanAndLoadPlan(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	os.MkdirAll(stateDir, 0755)
+
+	plan := testPlan("loom-20260220-100000-abc")
+	if err := SavePlan(plan); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+
+	if !PlanExists() {
+		t.Fatal("expected PlanExists()=true after SavePlan")
+	}
+
+	loaded, err := LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan: %v", err)
+	}
+
+	if loaded.ID != plan.ID {
+		t.Errorf("expected plan ID %s, got %s", plan.ID, loaded.ID)
+	}
+	if loaded.TotalTasks != 2 {
+		t.Errorf("expected 2 total tasks, got %d", loaded.TotalTasks)
+	}
+}
+
+func TestArchiveAndLoadArchived(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	planID := "loom-20260220-100000-abc"
+
+	// Create state and plan
+	_, err := New(planID, 1, 2)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	plan := testPlan(planID)
+	if err := SavePlan(plan); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+
+	// Archive
+	if err := Archive(); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// Verify archive directory exists
+	archiveDir := filepath.Join(stateDir, historyDir, planID)
+	if _, err := os.Stat(archiveDir); os.IsNotExist(err) {
+		t.Fatal("expected archive directory to exist")
+	}
+
+	// Load archived state
+	st, err := LoadArchived(planID)
+	if err != nil {
+		t.Fatalf("LoadArchived: %v", err)
+	}
+	if st.PlanID != planID {
+		t.Errorf("expected plan ID %s, got %s", planID, st.PlanID)
+	}
+
+	// Load archived plan
+	loadedPlan, err := LoadArchivedPlan(planID)
+	if err != nil {
+		t.Fatalf("LoadArchivedPlan: %v", err)
+	}
+	if loadedPlan.ID != planID {
+		t.Errorf("expected plan ID %s, got %s", planID, loadedPlan.ID)
+	}
+}
+
+func TestListHistory(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	// Empty history
+	ids, err := ListHistory()
+	if err != nil {
+		t.Fatalf("ListHistory (empty): %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected 0 history entries, got %d", len(ids))
+	}
+
+	// Create two archived runs with different timestamps
+	for _, id := range []string{"loom-20260220-090000-aaa", "loom-20260220-110000-bbb"} {
+		if _, err := New(id, 1, 1); err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := SavePlan(testPlan(id)); err != nil {
+			t.Fatalf("SavePlan: %v", err)
+		}
+		if err := Archive(); err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+	}
+
+	ids, err = ListHistory()
+	if err != nil {
+		t.Fatalf("ListHistory: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(ids))
+	}
+	// Newest first
+	if ids[0] != "loom-20260220-110000-bbb" {
+		t.Errorf("expected newest first, got %s", ids[0])
+	}
+	if ids[1] != "loom-20260220-090000-aaa" {
+		t.Errorf("expected oldest second, got %s", ids[1])
+	}
+}
+
+func TestLoadPrevious(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	// No history — should error
+	_, _, err := LoadPrevious()
+	if err == nil {
+		t.Fatal("expected error from LoadPrevious with no history")
+	}
+
+	// Create two archived runs
+	for _, id := range []string{"loom-20260220-090000-old", "loom-20260220-110000-new"} {
+		if _, err := New(id, 1, 1); err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := SavePlan(testPlan(id)); err != nil {
+			t.Fatalf("SavePlan: %v", err)
+		}
+		if err := Archive(); err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+	}
+
+	st, plan, err := LoadPrevious()
+	if err != nil {
+		t.Fatalf("LoadPrevious: %v", err)
+	}
+	if st.PlanID != "loom-20260220-110000-new" {
+		t.Errorf("expected newest plan ID, got %s", st.PlanID)
+	}
+	if plan.ID != "loom-20260220-110000-new" {
+		t.Errorf("expected newest plan, got %s", plan.ID)
+	}
+}
+
+func TestCleanCurrent(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	// Create state, plan, and archive
+	planID := "loom-20260220-100000-test"
+	if _, err := New(planID, 1, 1); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := SavePlan(testPlan(planID)); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	if err := Archive(); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// CleanCurrent should remove state.json and plan.json but keep history
+	if err := CleanCurrent(); err != nil {
+		t.Fatalf("CleanCurrent: %v", err)
+	}
+
+	if Exists() {
+		t.Error("expected state.json to be removed")
+	}
+	if PlanExists() {
+		t.Error("expected plan.json to be removed")
+	}
+
+	// History should still be there
+	if !HistoryExists() {
+		t.Error("expected history to be preserved")
+	}
+
+	ids, _ := ListHistory()
+	if len(ids) != 1 || ids[0] != planID {
+		t.Errorf("expected history entry %s, got %v", planID, ids)
+	}
+}
+
+func TestHistoryExists(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	if HistoryExists() {
+		t.Error("expected HistoryExists()=false with no history")
+	}
+
+	planID := "loom-20260220-100000-test"
+	New(planID, 1, 1)
+	SavePlan(testPlan(planID))
+	Archive()
+
+	if !HistoryExists() {
+		t.Error("expected HistoryExists()=true after archive")
 	}
 }

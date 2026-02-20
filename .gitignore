@@ -1,5 +1,5 @@
-# Binary
-beadloom
+# Binary (only the root binary, not cmd/beadloom/ source)
+/beadloom
 
 # Beads local database
 .beads/

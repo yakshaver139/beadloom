@@ -62,6 +62,18 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	o.State = st
 
+	// Persist the plan so `bdl status` can load it without rebuilding from beads
+	if err := state.SavePlan(o.Plan); err != nil {
+		return fmt.Errorf("save plan: %w", err)
+	}
+
+	// Archive state+plan to history when the run ends (success, failure, or cancel)
+	defer func() {
+		if archiveErr := state.Archive(); archiveErr != nil {
+			fmt.Fprintf(os.Stderr, "  %s archive run state: %v\n", ui.Yellow("⚠️  Warning:"), archiveErr)
+		}
+	}()
+
 	// Build pending count for each task (number of unfinished predecessors)
 	pending := make(map[string]int, len(o.Plan.Tasks))
 	for id := range o.Plan.Tasks {
