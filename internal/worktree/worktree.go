@@ -34,6 +34,15 @@ func (m *Manager) Create(name, branch string) (string, error) {
 		return wtPath, nil // reuse existing
 	}
 
+	// Pre-create the branch if it doesn't exist yet.
+	// bd worktree create --branch expects an existing ref, but for new tasks
+	// we need to create the branch first (pointing at HEAD).
+	if branch != "" {
+		if err := ensureBranch(branch); err != nil {
+			return "", fmt.Errorf("create branch %s: %w", branch, err)
+		}
+	}
+
 	// bd worktree create accepts a path (e.g., .worktrees/bd-123)
 	// and creates the directory with a beads redirect automatically
 	if err := m.Client.WorktreeCreate(wtPath, branch); err != nil {
@@ -48,6 +57,22 @@ func (m *Manager) Create(name, branch string) (string, error) {
 	}
 
 	return wtPath, nil
+}
+
+// ensureBranch creates a git branch at HEAD if it doesn't already exist.
+func ensureBranch(branch string) error {
+	// Check if the branch already exists
+	check := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if check.Run() == nil {
+		return nil // branch exists
+	}
+	// Create the branch at HEAD
+	cmd := exec.Command("git", "branch", branch)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git branch %s: %w\n%s", branch, err, string(out))
+	}
+	return nil
 }
 
 // Remove removes a worktree by name.
