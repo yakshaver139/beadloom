@@ -1,11 +1,27 @@
 package bd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const (
+	bdMaxRetries = 3
+	bdBaseDelay  = 500 * time.Millisecond
+	bdMaxJitter  = 500 * time.Millisecond
+)
+
+// isDoltLockError returns true if the command output indicates a dolt database lock conflict.
+func isDoltLockError(output []byte) bool {
+	return bytes.Contains(output, []byte("dolt access lock")) ||
+		bytes.Contains(output, []byte("lock busy"))
+}
 
 // Client wraps the bd CLI binary for task and worktree operations.
 type Client struct {
@@ -29,13 +45,31 @@ func (c *Client) baseArgs() []string {
 }
 
 func (c *Client) run(args ...string) ([]byte, error) {
-	all := append(c.baseArgs(), args...)
-	cmd := exec.Command(c.BdBin, all...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("bd %s: %w\n%s", strings.Join(args, " "), err, string(out))
+	label := "bd " + strings.Join(args, " ")
+	var lastErr error
+
+	for attempt := 0; attempt <= bdMaxRetries; attempt++ {
+		all := append(c.baseArgs(), args...)
+		cmd := exec.Command(c.BdBin, all...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return out, nil
+		}
+		if !isDoltLockError(out) {
+			return nil, fmt.Errorf("%s: %w\n%s", label, err, string(out))
+		}
+		lastErr = fmt.Errorf("%s: %w\n%s", label, err, string(out))
+		if attempt == bdMaxRetries {
+			break
+		}
+		delay := bdBaseDelay << attempt
+		jitter := time.Duration(rand.Int63n(int64(bdMaxJitter)))
+		fmt.Fprintf(os.Stderr, "bdl: dolt lock contention on %q, retrying in %v (attempt %d/%d)\n",
+			label, delay+jitter, attempt+1, bdMaxRetries)
+		time.Sleep(delay + jitter)
 	}
-	return out, nil
+
+	return nil, lastErr
 }
 
 // RawTask is the JSON structure returned by bd list/show.
