@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -417,6 +419,13 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 		err = nil
 	}
 
+	// If the agent emitted a "result" event but the process was killed by
+	// our grace-period timer (e.g. CLI hung waiting for a background task
+	// like a dev server), treat as success.
+	if err != nil && runner.resultSeen.Load() {
+		err = nil
+	}
+
 	finishedAt := time.Now()
 	elapsed := finishedAt.Sub(startTime)
 	exitCode := 0
@@ -468,8 +477,9 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 }
 
 type cmdRunner struct {
-	Cmd    *exec.Cmd
-	cancel context.CancelFunc
+	Cmd        *exec.Cmd
+	cancel     context.CancelFunc
+	resultSeen atomic.Bool // set when Claude CLI emits "type":"result"
 }
 
 // Cleanup releases the task context and kills any lingering child processes.
@@ -485,6 +495,31 @@ func (r *cmdRunner) Cleanup() {
 		// pgid == pid because we set Setpgid: true in spawnAgent.
 		_ = syscall.Kill(-r.Cmd.Process.Pid, syscall.SIGKILL)
 	}
+}
+
+// resultWatcher monitors Claude CLI stream-json output for the "result" event.
+// When the agent emits its result, the CLI *should* exit, but it may hang if
+// it's waiting for background tasks (e.g. a dev server started with & that
+// kill %1 failed to stop in a non-interactive shell). After a 10-second grace
+// period, we kill the entire process group to unblock cmd.Wait().
+type resultWatcher struct {
+	io.Writer
+	cmd      *exec.Cmd
+	seen     *atomic.Bool
+	killOnce sync.Once
+}
+
+func (rw *resultWatcher) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"type":"result"`)) {
+		rw.seen.Store(true)
+		rw.killOnce.Do(func() {
+			go func() {
+				time.Sleep(10 * time.Second)
+				_ = syscall.Kill(-rw.cmd.Process.Pid, syscall.SIGKILL)
+			}()
+		})
+	}
+	return rw.Writer.Write(p)
 }
 
 func (o *Orchestrator) spawnAgent(task planner.PlannedTask, wtPath string) (*cmdRunner, error) {
@@ -520,14 +555,18 @@ func (o *Orchestrator) spawnAgent(task planner.PlannedTask, wtPath string) (*cmd
 		return nil, fmt.Errorf("create log file: %w", err)
 	}
 
+	runner := &cmdRunner{Cmd: cmd, cancel: cancel}
+
 	if !o.Config.Quiet {
 		sf := ui.NewStreamFormatter(task.TaskID, os.Stderr, &o.mu)
 		mw := io.MultiWriter(logFile, sf)
-		cmd.Stdout = mw
-		cmd.Stderr = mw
+		rw := &resultWatcher{Writer: mw, cmd: cmd, seen: &runner.resultSeen}
+		cmd.Stdout = rw
+		cmd.Stderr = rw
 	} else {
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+		rw := &resultWatcher{Writer: logFile, cmd: cmd, seen: &runner.resultSeen}
+		cmd.Stdout = rw
+		cmd.Stderr = rw
 	}
 
 	now := time.Now()
@@ -564,7 +603,7 @@ func (o *Orchestrator) spawnAgent(task planner.PlannedTask, wtPath string) (*cmd
 	o.sessions[task.TaskID].PID = cmd.Process.Pid
 	o.mu.Unlock()
 
-	return &cmdRunner{Cmd: cmd, cancel: cancel}, nil
+	return runner, nil
 }
 
 func (o *Orchestrator) updateSession(taskID string, status SessionStatus, exitCode int, wtPath string) {
