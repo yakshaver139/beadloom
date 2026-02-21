@@ -2,12 +2,14 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/joshharrison/beadloom/internal/planner"
@@ -148,7 +150,7 @@ func (o *Orchestrator) runWaveMode() error {
 		// Automerge completed branches from this wave
 		if len(completedIDs) > 0 {
 			fmt.Fprintf(os.Stderr, "\n🧵 Merging wave %d branches...\n", wave.Index+1)
-			merged, err := o.mergeWaveBranches(wave, completedIDs)
+			merged, err := o.mergeWaveBranches(o.ctx, wave, completedIDs)
 			if err != nil {
 				o.State.SetStatus("failed")
 				return fmt.Errorf("automerge wave %d: %w", wave.Index+1, err)
@@ -404,9 +406,16 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 		o.updateSession(task.TaskID, StatusFailed, 0, wtPath)
 		return fmt.Errorf("spawn agent: %w", err)
 	}
+	defer runner.Cleanup()
 
 	// Wait for completion
 	err = runner.Cmd.Wait()
+
+	// If the agent exited cleanly but child processes kept pipes open,
+	// WaitDelay closes them after 5s. This is not a task failure.
+	if err != nil && errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
 
 	finishedAt := time.Now()
 	elapsed := finishedAt.Sub(startTime)
@@ -459,7 +468,23 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 }
 
 type cmdRunner struct {
-	Cmd *exec.Cmd
+	Cmd    *exec.Cmd
+	cancel context.CancelFunc
+}
+
+// Cleanup releases the task context and kills any lingering child processes.
+// Agent subprocesses (e.g. dev servers started for verification) can hold
+// stdout/stderr pipes open after the agent exits, which blocks cmd.Wait
+// indefinitely without the WaitDelay set in spawnAgent. This kills the
+// entire process group to ensure full cleanup.
+func (r *cmdRunner) Cleanup() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if r.Cmd.Process != nil {
+		// pgid == pid because we set Setpgid: true in spawnAgent.
+		_ = syscall.Kill(-r.Cmd.Process.Pid, syscall.SIGKILL)
+	}
 }
 
 func (o *Orchestrator) spawnAgent(task planner.PlannedTask, wtPath string) (*cmdRunner, error) {
@@ -473,15 +498,25 @@ func (o *Orchestrator) spawnAgent(task planner.PlannedTask, wtPath string) (*cmd
 	}
 
 	taskCtx, cancel := context.WithTimeout(o.ctx, o.Config.TimeoutPerTask)
-	_ = cancel // context cancelled when parent cancels or timeout fires
 
 	cmd := exec.CommandContext(taskCtx, o.Config.ClaudeBin, args...)
 	cmd.Dir = wtPath
 	cmd.Env = append(os.Environ(), "BD_DB="+o.Config.DbPath)
 
+	// Run the agent in its own process group so we can kill child processes
+	// (e.g. dev servers started for verification) that outlive the agent.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	// If the agent exits but child processes hold stdout/stderr pipes open,
+	// WaitDelay lets cmd.Wait() return instead of blocking indefinitely.
+	cmd.WaitDelay = 5 * time.Second
+
 	logPath := filepath.Join(wtPath, "beadloom.log")
 	logFile, err := os.Create(logPath)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("create log file: %w", err)
 	}
 
@@ -517,6 +552,7 @@ func (o *Orchestrator) spawnAgent(task planner.PlannedTask, wtPath string) (*cmd
 	}
 
 	if err := cmd.Start(); err != nil {
+		cancel()
 		logFile.Close()
 		return nil, err
 	}
@@ -528,7 +564,7 @@ func (o *Orchestrator) spawnAgent(task planner.PlannedTask, wtPath string) (*cmd
 	o.sessions[task.TaskID].PID = cmd.Process.Pid
 	o.mu.Unlock()
 
-	return &cmdRunner{Cmd: cmd}, nil
+	return &cmdRunner{Cmd: cmd, cancel: cancel}, nil
 }
 
 func (o *Orchestrator) updateSession(taskID string, status SessionStatus, exitCode int, wtPath string) {
