@@ -446,6 +446,13 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 		if closeErr := o.Worktrees.Client.Close(task.TaskID, "Completed by beadloom agent"); closeErr != nil {
 			fmt.Fprintf(os.Stderr, "  %s bd close %s: %v\n", ui.Yellow("⚠️  Warning:"), task.TaskID, closeErr)
 		}
+
+		// Auto-commit all changes the agent made in the worktree so that
+		// the branch has commits for the squash-merge step.
+		if commitErr := autoCommit(wtPath, task.TaskID, task.Title); commitErr != nil {
+			fmt.Fprintf(os.Stderr, "  %s auto-commit %s: %v\n", ui.Yellow("⚠️  Warning:"), task.TaskID, commitErr)
+		}
+
 		fmt.Fprintf(os.Stderr, "  ✅ %s %s %s\n", ui.TaskPrefix(task.TaskID), ui.Green("Completed"), ui.Dim(fmt.Sprintf("(%.1fs)", elapsed.Seconds())))
 	} else {
 		fmt.Fprintf(os.Stderr, "  ❌ %s %s %s\n", ui.TaskPrefix(task.TaskID), ui.Red(fmt.Sprintf("Failed exit %d", exitCode)), ui.Dim(fmt.Sprintf("(%.1fs)", elapsed.Seconds())))
@@ -472,6 +479,33 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 
 	if status == StatusFailed {
 		return fmt.Errorf("agent exited with code %d", exitCode)
+	}
+	return nil
+}
+
+// autoCommit stages and commits all changes in the worktree so the branch
+// has content for the squash-merge step. It's a no-op if there's nothing to commit.
+func autoCommit(wtPath, taskID, title string) error {
+	// Stage everything (including new files)
+	add := exec.Command("git", "add", "-A")
+	add.Dir = wtPath
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add: %w\n%s", err, out)
+	}
+
+	// Check if there's anything staged
+	diff := exec.Command("git", "diff", "--cached", "--quiet")
+	diff.Dir = wtPath
+	if diff.Run() == nil {
+		return nil // nothing to commit
+	}
+
+	// Commit
+	msg := fmt.Sprintf("beadloom: %s — %s", taskID, title)
+	commit := exec.Command("git", "commit", "-m", msg)
+	commit.Dir = wtPath
+	if out, err := commit.CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit: %w\n%s", err, out)
 	}
 	return nil
 }
