@@ -34,20 +34,44 @@ func (m *Manager) Create(name, branch string) (string, error) {
 		return wtPath, nil // reuse existing
 	}
 
-	// bd worktree create handles branch creation and sets up a
-	// .beads/redirect so the worktree shares the main beads database
+	// Try bd worktree create first — it handles git worktree creation
+	// plus .beads/redirect setup in one step.
 	if err := m.Client.WorktreeCreate(wtPath, branch); err != nil {
-		return "", fmt.Errorf("create worktree %s: %w", name, err)
-	}
+		// bd worktree create --branch treats the branch as an existing ref
+		// rather than creating a new one. Fall back to git directly.
+		gitArgs := []string{"worktree", "add"}
+		if branch != "" {
+			gitArgs = append(gitArgs, "-b", branch)
+		}
+		gitArgs = append(gitArgs, wtPath)
 
-	// Verify the directory was actually created — bd may exit 0
-	// without creating the directory if git state is inconsistent
-	// (e.g., stale worktree entries from concurrent removal)
-	if _, err := os.Stat(wtPath); err != nil {
-		return "", fmt.Errorf("worktree %s: directory missing after creation", name)
+		cmd := exec.Command("git", gitArgs...)
+		out, gitErr := cmd.CombinedOutput()
+		if gitErr != nil {
+			return "", fmt.Errorf("create worktree %s: %w\n%s", name, gitErr, string(out))
+		}
+
+		// Set up .beads/redirect so bd works inside the worktree
+		setupBeadsRedirect(wtPath)
 	}
 
 	return wtPath, nil
+}
+
+// setupBeadsRedirect creates a .beads/redirect file inside the worktree
+// so that bd can find the main repository's beads database.
+// This replicates what `bd worktree create` does for the redirect step.
+func setupBeadsRedirect(wtPath string) {
+	mainBeads, err := filepath.Abs(".beads")
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(mainBeads); err != nil {
+		return // no .beads in main repo, nothing to redirect
+	}
+	beadsDir := filepath.Join(wtPath, ".beads")
+	os.MkdirAll(beadsDir, 0755)
+	os.WriteFile(filepath.Join(beadsDir, "redirect"), []byte(mainBeads+"\n"), 0644)
 }
 
 // Remove removes a worktree by name.
