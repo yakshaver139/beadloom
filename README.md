@@ -15,6 +15,7 @@ Beadloom reads a task graph from a Beads database, computes critical paths and p
 
 ```bash
 go install github.com/yakshaver139/beadloom/cmd/beadloom@latest
+go install github.com/yakshaver139/beadloom/cmd/bdl@latest
 ```
 
 Or build from source:
@@ -23,6 +24,8 @@ Or build from source:
 git clone https://github.com/yakshaver139/beadloom
 cd beadloom && make install
 ```
+
+> `bdl` is a shorthand alias — both commands are identical.
 
 ## Quick Start
 
@@ -289,8 +292,11 @@ Beadloom is tested against `bd` v0.52+. It uses these `bd` commands:
 
 ```
 beadloom/
-├── cmd/beadloom/           # CLI entry point (cobra)
+├── cmd/
+│   ├── beadloom/           # CLI entry point (stub → internal/cli)
+│   └── bdl/                # Shorthand alias (stub → internal/cli)
 ├── internal/
+│   ├── cli/                # Shared CLI logic (cobra commands, flags, helpers)
 │   ├── bd/                 # bd CLI wrapper (list, show, dep, worktree, close)
 │   ├── claude/             # Claude API client (dependency inference)
 │   ├── graph/              # Task DAG builder + cycle detection
@@ -300,7 +306,7 @@ beadloom/
 │   ├── orchestrator/       # Wave execution engine + Claude agent spawning
 │   ├── reporter/           # Terminal status display + JSON output
 │   ├── state/              # Persistent state (.beadloom/state.json)
-│   └── viewer/             # Embedded HTTP server + SPA for `bdl view`
+│   └── viewer/             # Embedded HTTP server + SPA for `beadloom view`
 ├── beadloom_visualiser/    # React Flow browser UI source (git submodule)
 └── templates/              # Default agent prompt template
 ```

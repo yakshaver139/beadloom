@@ -1,18 +1,17 @@
 .PHONY: build test clean install lint build-ui
 
-BINARY := beadloom
-BUILD_DIR := ./cmd/beadloom
-
 build-ui:
 	cd beadloom_visualiser && npm ci && npm run build
 	rm -rf internal/viewer/dist && mkdir -p internal/viewer/dist
 	cp -r beadloom_visualiser/dist/* internal/viewer/dist/
 
 build:
-	go build -o $(BINARY) $(BUILD_DIR)
+	go build -o beadloom ./cmd/beadloom
+	go build -o bdl ./cmd/bdl
 
 install:
-	go install $(BUILD_DIR)
+	go install ./cmd/beadloom
+	go install ./cmd/bdl
 
 test:
 	go test ./...
@@ -24,6 +23,6 @@ lint:
 	go vet ./...
 
 clean:
-	rm -f $(BINARY)
+	rm -f beadloom bdl
 	rm -rf .worktrees/
 	rm -rf .beadloom/
