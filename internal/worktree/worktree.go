@@ -34,6 +34,11 @@ func (m *Manager) Create(name, branch string) (string, error) {
 		return wtPath, nil // reuse existing
 	}
 
+	// Git worktrees require at least one commit.
+	if err := ensureInitialCommit(); err != nil {
+		return "", fmt.Errorf("create worktree %s: %w", name, err)
+	}
+
 	// Try bd worktree create first — it handles git worktree creation
 	// plus .beads/redirect setup in one step.
 	if err := m.Client.WorktreeCreate(wtPath, branch); err != nil {
@@ -56,6 +61,20 @@ func (m *Manager) Create(name, branch string) (string, error) {
 	}
 
 	return wtPath, nil
+}
+
+// ensureInitialCommit creates an empty commit if HEAD is not valid.
+// Git worktrees cannot be created in a repo with no commits.
+func ensureInitialCommit() error {
+	if exec.Command("git", "rev-parse", "--verify", "--quiet", "HEAD").Run() == nil {
+		return nil // HEAD is valid
+	}
+	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "Initial commit")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("create initial commit: %w\n%s", err, string(out))
+	}
+	return nil
 }
 
 // setupBeadsRedirect creates a .beads/redirect file inside the worktree
