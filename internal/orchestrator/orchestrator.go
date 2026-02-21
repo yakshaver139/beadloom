@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -449,7 +450,7 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 
 		// Auto-commit all changes the agent made in the worktree so that
 		// the branch has commits for the squash-merge step.
-		if commitErr := autoCommit(wtPath, task.TaskID, task.Title); commitErr != nil {
+		if commitErr := autoCommit(wtPath, task.TaskID, task.Title, o.Config.GitTrace); commitErr != nil {
 			fmt.Fprintf(os.Stderr, "  %s auto-commit %s: %v\n", ui.Yellow("⚠️  Warning:"), task.TaskID, commitErr)
 		}
 
@@ -483,28 +484,42 @@ func (o *Orchestrator) executeTask(task planner.PlannedTask, wtPath string) erro
 	return nil
 }
 
+// runGit executes a git command in the given directory. When trace is true it
+// logs the full command and output to stderr for debugging merge issues.
+func runGit(trace bool, dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if trace {
+		fmt.Fprintf(os.Stderr, "  %s [%s] git %s\n", ui.Dim("GIT>"), filepath.Base(dir), strings.Join(args, " "))
+	}
+	out, err := cmd.CombinedOutput()
+	if trace && len(out) > 0 {
+		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+			fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Dim("GIT<"), line)
+		}
+	}
+	if trace && err != nil {
+		fmt.Fprintf(os.Stderr, "  %s exit: %v\n", ui.Dim("GIT!"), err)
+	}
+	return out, err
+}
+
 // autoCommit stages and commits all changes in the worktree so the branch
 // has content for the squash-merge step. It's a no-op if there's nothing to commit.
-func autoCommit(wtPath, taskID, title string) error {
+func autoCommit(wtPath, taskID, title string, trace bool) error {
 	// Stage everything (including new files)
-	add := exec.Command("git", "add", "-A")
-	add.Dir = wtPath
-	if out, err := add.CombinedOutput(); err != nil {
+	if out, err := runGit(trace, wtPath, "add", "-A"); err != nil {
 		return fmt.Errorf("git add: %w\n%s", err, out)
 	}
 
 	// Check if there's anything staged
-	diff := exec.Command("git", "diff", "--cached", "--quiet")
-	diff.Dir = wtPath
-	if diff.Run() == nil {
+	if _, err := runGit(trace, wtPath, "diff", "--cached", "--quiet"); err == nil {
 		return nil // nothing to commit
 	}
 
 	// Commit
 	msg := fmt.Sprintf("beadloom: %s — %s", taskID, title)
-	commit := exec.Command("git", "commit", "-m", msg)
-	commit.Dir = wtPath
-	if out, err := commit.CombinedOutput(); err != nil {
+	if out, err := runGit(trace, wtPath, "commit", "-m", msg); err != nil {
 		return fmt.Errorf("git commit: %w\n%s", err, out)
 	}
 	return nil

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -16,9 +15,10 @@ import (
 // into the current branch. Returns the count of merged branches.
 // On merge conflict it aborts the merge and returns an error.
 func (o *Orchestrator) mergeWaveBranches(ctx context.Context, wave planner.ExecutionWave, completedIDs map[string]bool) (int, error) {
-	mergeCtx, mergeCancel := context.WithTimeout(ctx, 5*time.Minute)
+	_, mergeCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer mergeCancel()
 
+	trace := o.Config.GitTrace
 	merged := 0
 	var mergedBranches []string
 
@@ -31,23 +31,23 @@ func (o *Orchestrator) mergeWaveBranches(ctx context.Context, wave planner.Execu
 		commitMsg := fmt.Sprintf("beadloom: %s — %s", task.TaskID, task.Title)
 
 		// Squash merge
-		out, err := exec.CommandContext(mergeCtx, "git", "merge", "--squash", branch).CombinedOutput()
+		out, err := runGit(trace, ".", "merge", "--squash", branch)
 		if err != nil {
-			exec.CommandContext(mergeCtx, "git", "merge", "--abort").Run()
+			runGit(trace, ".", "merge", "--abort")
 			return merged, fmt.Errorf("merge conflict on %s: %s", branch, strings.TrimSpace(string(out)))
 		}
 
 		// Stage beads state
-		exec.CommandContext(mergeCtx, "git", "add", ".beads/").Run()
+		runGit(trace, ".", "add", ".beads/")
 
 		// Check if the squash merge staged anything
-		if err := exec.CommandContext(mergeCtx, "git", "diff", "--cached", "--quiet").Run(); err == nil {
+		if _, err := runGit(trace, ".", "diff", "--cached", "--quiet"); err == nil {
 			fmt.Fprintf(os.Stderr, "  %s %s — already up to date\n", ui.Dim("‣"), ui.BoldMagenta(branch))
 			continue
 		}
 
 		// Commit
-		out, err = exec.CommandContext(mergeCtx, "git", "commit", "-m", commitMsg).CombinedOutput()
+		out, err = runGit(trace, ".", "commit", "-m", commitMsg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s %s — commit failed: %s\n", ui.Yellow("⚠"), ui.BoldMagenta(branch), strings.TrimSpace(string(out)))
 			continue
@@ -60,11 +60,11 @@ func (o *Orchestrator) mergeWaveBranches(ctx context.Context, wave planner.Execu
 
 	// Cleanup: delete merged branches and prune worktrees
 	for _, branch := range mergedBranches {
-		if err := exec.CommandContext(mergeCtx, "git", "branch", "-D", branch).Run(); err != nil {
+		if _, err := runGit(trace, ".", "branch", "-D", branch); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s delete branch %s: %v\n", ui.Yellow("⚠"), branch, err)
 		}
 	}
-	exec.CommandContext(mergeCtx, "git", "worktree", "prune").Run()
+	runGit(trace, ".", "worktree", "prune")
 
 	return merged, nil
 }

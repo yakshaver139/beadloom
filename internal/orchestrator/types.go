@@ -14,6 +14,7 @@ type Config struct {
 	WorktreeDir    string
 	DbPath         string
 	ClaudeBin      string // path to claude binary (default: "claude")
+	GitTrace       bool   // log every git command and its output to stderr
 }
 
 // SessionStatus represents the status of an agent session.

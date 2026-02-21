@@ -173,6 +173,7 @@ func planCmd() *cobra.Command {
 func runCmd() *cobra.Command {
 	var flagQuiet bool
 	var flagAutomerge bool
+	var flagGitTrace bool
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -242,6 +243,7 @@ func runCmd() *cobra.Command {
 				Safe:           flagSafe,
 				Quiet:          flagQuiet,
 				Automerge:      flagAutomerge,
+				GitTrace:       flagGitTrace,
 				TimeoutPerTask: timeout,
 				WorktreeDir:    flagWorktreeDir,
 				DbPath:         flagDB,
@@ -270,6 +272,7 @@ func runCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flagFilter, "filter", "", "Filter tasks")
 	cmd.Flags().BoolVarP(&flagQuiet, "quiet", "q", false, "Suppress streaming agent output")
 	cmd.Flags().BoolVar(&flagAutomerge, "automerge", false, "Merge branches at wave boundaries (wave-barrier mode)")
+	cmd.Flags().BoolVar(&flagGitTrace, "git-trace", false, "Log every git command and its output to stderr")
 
 	return cmd
 }
