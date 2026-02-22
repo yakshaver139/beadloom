@@ -26,12 +26,23 @@ func NewManager(baseDir string, client *bd.Client) *Manager {
 
 // Create creates a new worktree for the given task.
 // Returns the path to the worktree directory.
+//
+// In wave-barrier mode (automerge), this is called after the previous wave's
+// branches have been merged into the current branch. The worktree is always
+// based on HEAD so that dependent tasks see upstream changes.
 func (m *Manager) Create(name, branch string) (string, error) {
 	wtPath := filepath.Join(m.BaseDir, name)
 
-	// Check if worktree already exists
+	// If a worktree directory already exists (e.g. from a previous run or
+	// incomplete cleanup), remove it so we get a fresh checkout from HEAD.
 	if _, err := os.Stat(wtPath); err == nil {
-		return wtPath, nil // reuse existing
+		exec.Command("git", "worktree", "remove", "--force", wtPath).Run()
+		os.RemoveAll(wtPath)
+		exec.Command("git", "worktree", "prune").Run()
+		// Also delete the stale branch so -b can recreate it from HEAD
+		if branch != "" {
+			exec.Command("git", "branch", "-D", branch).Run()
+		}
 	}
 
 	// Git worktrees require at least one commit.
@@ -44,11 +55,13 @@ func (m *Manager) Create(name, branch string) (string, error) {
 	if err := m.Client.WorktreeCreate(wtPath, branch); err != nil {
 		// bd worktree create --branch treats the branch as an existing ref
 		// rather than creating a new one. Fall back to git directly.
+		// Explicitly pass HEAD so the branch is based on the current state
+		// (which includes merged changes from earlier waves).
 		gitArgs := []string{"worktree", "add"}
 		if branch != "" {
 			gitArgs = append(gitArgs, "-b", branch)
 		}
-		gitArgs = append(gitArgs, wtPath)
+		gitArgs = append(gitArgs, wtPath, "HEAD")
 
 		cmd := exec.Command("git", gitArgs...)
 		out, gitErr := cmd.CombinedOutput()
