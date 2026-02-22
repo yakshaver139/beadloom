@@ -37,14 +37,21 @@ func (o *Orchestrator) mergeWaveBranches(ctx context.Context, wave planner.Execu
 			return merged, fmt.Errorf("merge conflict on %s: %s", branch, strings.TrimSpace(string(out)))
 		}
 
-		// Stage beads state
+		// Stage beads state (but not the redirect file)
 		runGit(trace, ".", "add", ".beads/")
+		runGit(trace, ".", "reset", "HEAD", "--", ".beads/redirect")
+
+		// Unstage beadloom.log if it was brought in by the squash
+		runGit(trace, ".", "reset", "HEAD", "--", "beadloom.log")
 
 		// Check if the squash merge staged anything
 		if _, err := runGit(trace, ".", "diff", "--cached", "--quiet"); err == nil {
 			fmt.Fprintf(os.Stderr, "  %s %s — already up to date\n", ui.Dim("‣"), ui.BoldMagenta(branch))
 			continue
 		}
+
+		// Show what will be committed
+		runGit(true, ".", "status", "--short")
 
 		// Commit
 		out, err = runGit(trace, ".", "commit", "-m", commitMsg)
@@ -58,13 +65,19 @@ func (o *Orchestrator) mergeWaveBranches(ctx context.Context, wave planner.Execu
 		mergedBranches = append(mergedBranches, branch)
 	}
 
-	// Cleanup: delete merged branches and prune worktrees
+	// Cleanup: force-remove worktrees first so branches aren't "checked out",
+	// then prune stale worktree metadata, then delete the branches.
+	for _, branch := range mergedBranches {
+		taskID := strings.TrimPrefix(branch, "beadloom/")
+		wtPath := o.Worktrees.Path(taskID)
+		runGit(trace, ".", "worktree", "remove", "--force", wtPath)
+	}
+	runGit(trace, ".", "worktree", "prune")
 	for _, branch := range mergedBranches {
 		if _, err := runGit(trace, ".", "branch", "-D", branch); err != nil {
 			fmt.Fprintf(os.Stderr, "  %s delete branch %s: %v\n", ui.Yellow("⚠"), branch, err)
 		}
 	}
-	runGit(trace, ".", "worktree", "prune")
 
 	return merged, nil
 }

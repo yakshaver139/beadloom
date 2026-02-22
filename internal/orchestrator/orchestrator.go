@@ -512,6 +512,12 @@ func autoCommit(wtPath, taskID, title string, trace bool) error {
 		return fmt.Errorf("git add: %w\n%s", err, out)
 	}
 
+	// Unstage files that must not be committed:
+	// - beadloom.log: agent log file, local to each worktree
+	// - .beads/redirect: worktree-local pointer to the main beads DB;
+	//   committing it creates redirect chains in downstream worktrees
+	runGit(trace, wtPath, "reset", "HEAD", "--", "beadloom.log", ".beads/redirect")
+
 	// Check if there's anything staged
 	if _, err := runGit(trace, wtPath, "diff", "--cached", "--quiet"); err == nil {
 		return nil // nothing to commit
