@@ -333,6 +333,21 @@ upstream changes. Use --git-trace to debug merge issues.`,
 				if err := json.Unmarshal(data, plan); err != nil {
 					return fmt.Errorf("parse plan file: %w", err)
 				}
+			} else if state.PlanExists() {
+				// Reuse the previous plan so wave numbering stays consistent
+				// across restarts. Completed tasks (closed in beads) are
+				// skipped during execution, not removed from the plan.
+				prev, err := state.LoadPlan()
+				if err == nil {
+					plan = prev
+					fmt.Fprintf(os.Stderr, "📋 %s (wave numbering preserved)\n",
+						ui.Dim("Resuming from previous plan"))
+				} else {
+					plan, _, _, err = buildPlan()
+					if err != nil {
+						return err
+					}
+				}
 			} else {
 				var err error
 				plan, _, _, err = buildPlan()
@@ -404,6 +419,26 @@ upstream changes. Use --git-trace to debug merge issues.`,
 			if err := orch.Run(ctx); err != nil {
 				rpt := reporter.New(plan, orch.State)
 				fmt.Fprintln(os.Stderr, rpt.Summary())
+
+				// Print recovery guidance
+				errStr := err.Error()
+				fmt.Fprintf(os.Stderr, "\n%s %s\n", ui.BoldRed("Error:"), errStr)
+				if strings.Contains(errStr, "merge conflict") || strings.Contains(errStr, "overwritten by merge") {
+					fmt.Fprintf(os.Stderr, "\n%s\n", ui.BoldWhite("To recover:"))
+					fmt.Fprintf(os.Stderr, "  1. Review the conflict in the worktree branch listed above\n")
+					fmt.Fprintf(os.Stderr, "  2. Resolve manually: git merge --abort, then merge or cherry-pick as needed\n")
+					fmt.Fprintf(os.Stderr, "  3. Clean up worktrees:  git worktree list && git worktree remove <path>\n")
+					fmt.Fprintf(os.Stderr, "  4. Re-run:             bdl run %s\n", strings.Join(os.Args[2:], " "))
+					fmt.Fprintf(os.Stderr, "\n  Completed tasks (closed in beads) will be skipped on re-run.\n")
+				} else if strings.Contains(errStr, "critical task") {
+					fmt.Fprintf(os.Stderr, "\n%s\n", ui.BoldWhite("To recover:"))
+					fmt.Fprintf(os.Stderr, "  1. Check the agent log:  bdl status --logs <task-id>\n")
+					fmt.Fprintf(os.Stderr, "  2. Fix the issue or close the task manually:  bd close <task-id>\n")
+					fmt.Fprintf(os.Stderr, "  3. Clean up worktrees:  bdl merge --dry-run\n")
+					fmt.Fprintf(os.Stderr, "  4. Re-run:              bdl run %s\n", strings.Join(os.Args[2:], " "))
+					fmt.Fprintf(os.Stderr, "\n  Completed tasks (closed in beads) will be skipped on re-run.\n")
+				}
+
 				return err
 			}
 

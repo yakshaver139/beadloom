@@ -28,6 +28,7 @@ type Orchestrator struct {
 	Config     Config
 	State      *state.RunState
 	sessions   map[string]*AgentSession
+	closed     map[string]bool // tasks already closed in beads (skip on restart)
 	mu         sync.Mutex
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -59,6 +60,18 @@ func New(plan *planner.ExecutionPlan, wm *worktree.Manager, cfg Config) *Orchest
 func (o *Orchestrator) Run(ctx context.Context) error {
 	o.ctx, o.cancelFunc = context.WithCancel(ctx)
 	defer o.cancelFunc()
+
+	// Detect tasks already closed in beads so we skip them on restart
+	o.closed = make(map[string]bool)
+	for id := range o.Plan.Tasks {
+		task, err := o.Worktrees.Client.Show(id)
+		if err == nil && task.Status == "closed" {
+			o.closed[id] = true
+		}
+	}
+	if len(o.closed) > 0 {
+		fmt.Fprintf(os.Stderr, "  %s %d tasks already closed, will be skipped\n", ui.Dim("↩"), len(o.closed))
+	}
 
 	// Initialize state
 	st, err := state.New(o.Plan.ID, o.Plan.TotalWaves, o.Plan.TotalTasks)
@@ -109,7 +122,26 @@ func (o *Orchestrator) runWaveMode() error {
 			return fmt.Errorf("cancelled: %w", err)
 		}
 
-		fmt.Fprintf(os.Stderr, "\n🌊 %s %d (%d tasks)\n", ui.BoldWhite("Wave"), wave.Index+1, len(wave.Tasks))
+		// Mark already-closed tasks as finished so they're skipped
+		for _, task := range wave.Tasks {
+			if o.closed[task.TaskID] {
+				finished[task.TaskID] = true
+			}
+		}
+
+		// Count actionable tasks in this wave
+		actionable := 0
+		for _, task := range wave.Tasks {
+			if !finished[task.TaskID] {
+				actionable++
+			}
+		}
+		if actionable == 0 {
+			fmt.Fprintf(os.Stderr, "\n🌊 %s %d — %s\n", ui.BoldWhite("Wave"), wave.Index+1, ui.Dim("all tasks already completed, skipping"))
+			continue
+		}
+
+		fmt.Fprintf(os.Stderr, "\n🌊 %s %d (%d tasks)\n", ui.BoldWhite("Wave"), wave.Index+1, actionable)
 
 		// Dispatch all tasks in this wave
 		inflight := 0
@@ -188,9 +220,18 @@ func (o *Orchestrator) runDynamic() error {
 
 	fmt.Fprintf(os.Stderr, "\n🚀 %s (%d tasks, max %d parallel)\n", ui.BoldCyan("Dynamic scheduler started"), totalTasks, o.Config.MaxParallel)
 
+	// Mark already-closed tasks as finished and decrement successor pending counts
+	for id := range o.closed {
+		finished[id] = true
+		totalDone++
+		for _, succID := range o.Plan.Deps.Successors[id] {
+			pending[succID]--
+		}
+	}
+
 	// Dispatch all root tasks (pending == 0)
 	for id, count := range pending {
-		if count == 0 {
+		if count == 0 && !finished[id] {
 			task := o.Plan.Tasks[id]
 			fmt.Fprintf(os.Stderr, "  ▶ %s %s\n", ui.TaskPrefix(task.TaskID), task.Title)
 			o.dispatch(*task, sem, &wtMu, done)
