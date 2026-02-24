@@ -165,36 +165,35 @@ Thumbs.db
 Desktop.ini
 
 # === Editors / IDEs ===
-.vscode/
-.idea/
+**/.vscode/
+**/.idea/
 *.swp
 *.swo
 *~
-.claude/
+**/.claude/
 
 # === Python ===
-__pycache__/
+**/__pycache__/
 *.py[cod]
-*.egg-info/
-dist/
-build/
+**/*.egg-info/
+**/dist/
+**/build/
 *.egg
-.venv/
-venv/
-env/
-.env
+**/.venv/
+**/venv/
+**/env/
+**/.env
 .python-version
 
 # === Node / JavaScript / TypeScript ===
-node_modules/
+**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-.next/
-.nuxt/
-dist/
-.cache/
+**/.next/
+**/.nuxt/
+**/.cache/
 
 # === Go ===
 /vendor/
@@ -207,7 +206,7 @@ dist/
 *.out
 
 # === Rust ===
-target/
+**/target/
 Cargo.lock
 
 # === Java / Kotlin ===
@@ -215,12 +214,11 @@ Cargo.lock
 *.jar
 *.war
 *.ear
-.gradle/
-build/
+**/.gradle/
 
 # === Ruby ===
-.bundle/
-vendor/bundle/
+**/.bundle/
+**/vendor/bundle/
 *.gem
 
 # === C / C++ ===
@@ -228,25 +226,24 @@ vendor/bundle/
 *.obj
 *.a
 *.lib
-*.out
 
 # === Docker ===
-.docker/
+**/.docker/
 
 # === Terraform ===
-.terraform/
+**/.terraform/
 *.tfstate
 *.tfstate.*
 
 # === Logs & temp ===
 *.log
-tmp/
-temp/
+**/tmp/
+**/temp/
 
 # === Beadloom ===
-.beadloom/
-beadloom.log
-.worktrees/
+**/.beadloom/
+**/beadloom.log
+**/.worktrees/
 `
 
 	os.WriteFile(path, []byte(content), 0644)
