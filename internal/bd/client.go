@@ -91,28 +91,30 @@ type RawTask struct {
 	Blocks    []string `json:"-"`
 }
 
-// ListOpen returns all open and blocked tasks as JSON.
-// Both statuses are included because beadloom marks tasks with unmet
-// dependencies as "blocked" — they still need to be part of the plan.
+// ListOpen returns all actionable tasks (open, blocked, and in-progress) as JSON.
+// All three statuses are included so beadloom can build a complete plan:
+//   - open: ready to run
+//   - blocked: has unmet dependencies (set by beadloom during plan/run)
+//   - in_progress: started but not yet completed (important for restart recovery)
 func (c *Client) ListOpen() ([]RawTask, error) {
-	out, err := c.run("list", "--json", "--status", "open", "--limit", "0")
-	if err != nil {
-		return nil, err
-	}
 	var tasks []RawTask
-	if err := json.Unmarshal(out, &tasks); err != nil {
-		return nil, fmt.Errorf("parse bd list output: %w", err)
-	}
-
-	// Also include blocked tasks (beadloom sets this status for tasks with deps)
-	blockedOut, err := c.run("list", "--json", "--status", "blocked", "--limit", "0")
-	if err == nil {
-		var blocked []RawTask
-		if err := json.Unmarshal(blockedOut, &blocked); err == nil {
-			tasks = append(tasks, blocked...)
+	for _, status := range []string{"open", "blocked", "in_progress"} {
+		out, err := c.run("list", "--json", "--status", status, "--limit", "0")
+		if err != nil {
+			if status == "open" {
+				return nil, err // open is required, others are best-effort
+			}
+			continue
 		}
+		var batch []RawTask
+		if err := json.Unmarshal(out, &batch); err != nil {
+			if status == "open" {
+				return nil, fmt.Errorf("parse bd list output: %w", err)
+			}
+			continue
+		}
+		tasks = append(tasks, batch...)
 	}
-
 	return tasks, nil
 }
 
