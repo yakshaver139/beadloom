@@ -151,6 +151,107 @@ func buildPlan() (*planner.ExecutionPlan, *graph.TaskGraph, *cpm.CPMResult, erro
 	return plan, g, result, nil
 }
 
+// ensureGitignore creates a comprehensive .gitignore if one does not already exist.
+// Called at the start of a run so agent-created artifacts don't pollute git status.
+func ensureGitignore() {
+	const path = ".gitignore"
+	if _, err := os.Stat(path); err == nil {
+		return // already exists, don't overwrite
+	}
+
+	content := `# === OS ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# === Editors / IDEs ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+.env
+.python-version
+
+# === Node / JavaScript / TypeScript ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.next/
+.nuxt/
+dist/
+.cache/
+
+# === Go ===
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# === Rust ===
+target/
+Cargo.lock
+
+# === Java / Kotlin ===
+*.class
+*.jar
+*.war
+*.ear
+.gradle/
+build/
+
+# === Ruby ===
+.bundle/
+vendor/bundle/
+*.gem
+
+# === C / C++ ===
+*.o
+*.obj
+*.a
+*.lib
+*.out
+
+# === Docker ===
+.docker/
+
+# === Terraform ===
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# === Logs & temp ===
+*.log
+tmp/
+temp/
+
+# === Beadloom ===
+.beadloom/
+beadloom.log
+.worktrees/
+`
+
+	os.WriteFile(path, []byte(content), 0644)
+}
+
 // syncBeadsBlockedStatus updates the beads database to reflect dependency state:
 // tasks with unmet predecessors are marked "blocked", root tasks stay "open".
 func syncBeadsBlockedStatus(plan *planner.ExecutionPlan) {
@@ -221,6 +322,9 @@ In wave-barrier mode (--automerge), completed branches are squash-merged
 back into the current branch at wave boundaries so that later waves see
 upstream changes. Use --git-trace to debug merge issues.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Ensure a .gitignore exists so agent output doesn't pollute git
+			ensureGitignore()
+
 			var plan *planner.ExecutionPlan
 
 			if flagPlanFile != "" {
