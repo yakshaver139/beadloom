@@ -77,12 +77,15 @@ Visualisation:
   %s viz             Print an ASCII DAG or DOT graph of the plan
   %s view            Open an interactive browser visualiser
 
+Review:
+  %s summarise       Print a run summary (optionally with Claude narrative)
+
 Utilities:
   %s infer-deps      Use Claude to infer task dependencies from titles
   %s cancel          Abort running agent sessions
 
 Alias: this command is also available as %q.`, binName,
-			binName, binName, binName, binName, binName, binName, binName, binName, alias),
+			binName, binName, binName, binName, binName, binName, binName, binName, binName, alias),
 	}
 
 	// Global flags (available to all subcommands)
@@ -102,6 +105,7 @@ Alias: this command is also available as %q.`, binName,
 	rootCmd.AddCommand(viewCmd())
 	rootCmd.AddCommand(inferDepsCmd())
 	rootCmd.AddCommand(mergeCmd())
+	rootCmd.AddCommand(summariseCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -875,6 +879,142 @@ func mergeMode(noSquash bool) string {
 		return "no-ff merge"
 	}
 	return "squash"
+}
+
+func summariseCmd() *cobra.Command {
+	var (
+		flagIncludeAgentResults bool
+		flagPrevious            bool
+		flagPlanID              string
+		flagModel               string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "summarise",
+		Aliases: []string{"summarize"},
+		Short:   "Print a structured run summary with optional Claude narrative",
+		Long: `Displays a detailed summary of a beadloom run including plan ID, status,
+duration, per-wave breakdown with task outcomes and timing, and totals.
+
+Use --include-agent-results to send agent session logs to Claude for a
+human-readable narrative of what each agent accomplished or why it failed.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if flagPrevious && flagPlanID != "" {
+				return fmt.Errorf("--previous and --plan are mutually exclusive")
+			}
+
+			var st *state.RunState
+			var plan *planner.ExecutionPlan
+
+			switch {
+			case flagPrevious:
+				var err error
+				st, plan, err = state.LoadPrevious()
+				if err != nil {
+					return fmt.Errorf("load previous run: %w", err)
+				}
+
+			case flagPlanID != "":
+				var err error
+				st, err = state.LoadArchived(flagPlanID)
+				if err != nil {
+					return fmt.Errorf("load archived run %s: %w", flagPlanID, err)
+				}
+				plan, err = state.LoadArchivedPlan(flagPlanID)
+				if err != nil {
+					return fmt.Errorf("load archived plan %s: %w", flagPlanID, err)
+				}
+
+			default:
+				// Try current run first, fall back to previous
+				if state.Exists() {
+					var err error
+					st, err = state.Load()
+					if err != nil {
+						return err
+					}
+					plan, err = state.LoadPlan()
+					if err != nil {
+						return fmt.Errorf("load plan: %w", err)
+					}
+				} else {
+					var err error
+					st, plan, err = state.LoadPrevious()
+					if err != nil {
+						return fmt.Errorf("no active or previous run found: %w", err)
+					}
+				}
+			}
+
+			rpt := reporter.New(plan, st)
+
+			if flagJSON && !flagIncludeAgentResults {
+				data, err := rpt.JSON()
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(data))
+				return nil
+			}
+
+			summaryText := rpt.PrintSummaryReport(os.Stdout)
+
+			if !flagIncludeAgentResults {
+				return nil
+			}
+
+			// Read agent session logs
+			fmt.Printf("\n%s\n", ui.BoldCyan("Generating agent summary via Claude..."))
+
+			taskLogs := make(map[string]string)
+			for taskID, ss := range st.Sessions {
+				if ss.LogFile == "" {
+					continue
+				}
+				data, err := os.ReadFile(ss.LogFile)
+				if err != nil {
+					continue
+				}
+				log := string(data)
+				// Truncate to last ~2000 lines
+				lines := strings.Split(log, "\n")
+				if len(lines) > 2000 {
+					lines = lines[len(lines)-2000:]
+					log = strings.Join(lines, "\n")
+				}
+				taskLogs[taskID] = log
+			}
+
+			if len(taskLogs) == 0 {
+				fmt.Printf("%s No agent logs found.\n", ui.Yellow("⚠"))
+				return nil
+			}
+
+			claudeClient, err := claude.NewClient("", flagModel)
+			if err != nil {
+				return err
+			}
+
+			ctx := context.Background()
+			narrative, err := claudeClient.SummariseRun(ctx, summaryText, taskLogs)
+			if err != nil {
+				return fmt.Errorf("claude summarise: %w", err)
+			}
+
+			fmt.Printf("\n%s\n", ui.BoldCyan("Agent Summary"))
+			fmt.Printf("%s\n", ui.Cyan("──────────────────────────"))
+			fmt.Println(narrative)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&flagIncludeAgentResults, "include-agent-results", false, "Send agent logs to Claude for a narrative summary")
+	cmd.Flags().BoolVar(&flagPrevious, "previous", false, "Summarise the most recent completed run")
+	cmd.Flags().StringVar(&flagPlanID, "plan", "", "Summarise a specific historical run by plan ID")
+	cmd.Flags().StringVar(&flagModel, "model", "", "Claude model override (for agent results)")
+
+	return cmd
 }
 
 func vizCmd() *cobra.Command {

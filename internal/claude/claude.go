@@ -127,6 +127,57 @@ func (c *Client) InferDeps(ctx context.Context, tasks []TaskSummary) (*InferDeps
 	return &result, nil
 }
 
+const summariseRunPrompt = `You are a technical project manager summarising a beadloom orchestration run.
+
+You will receive:
+1. A structured run summary (plan ID, status, waves, task outcomes).
+2. Agent session logs for each task (truncated to the last ~2000 lines).
+
+Produce a concise narrative summary covering:
+- What each task accomplished (or why it failed/was skipped).
+- Any notable issues, warnings, or unexpected behaviour.
+- An overall assessment of the run.
+
+Keep it concise — aim for 1-2 sentences per task and a short overall paragraph.
+Do not repeat raw log content verbatim. Focus on the human-readable takeaway.
+`
+
+// SummariseRun sends a run summary and task logs to Claude and returns a
+// human-readable narrative of what each agent accomplished or why it failed.
+func (c *Client) SummariseRun(ctx context.Context, runSummary string, taskLogs map[string]string) (string, error) {
+	var userContent strings.Builder
+	userContent.WriteString("## Run Summary\n\n")
+	userContent.WriteString(runSummary)
+	userContent.WriteString("\n\n## Agent Session Logs\n\n")
+
+	for taskID, log := range taskLogs {
+		userContent.WriteString(fmt.Sprintf("### Task: %s\n```\n%s\n```\n\n", taskID, log))
+	}
+
+	resp, err := c.inner.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     c.model,
+		MaxTokens: int64(4096),
+		System: []anthropic.TextBlockParam{
+			{Text: summariseRunPrompt},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(userContent.String())),
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("claude API call: %w", err)
+	}
+
+	var text string
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			text += block.Text
+		}
+	}
+
+	return strings.TrimSpace(text), nil
+}
+
 // stripJSONFences removes markdown code fences that Claude sometimes adds.
 func stripJSONFences(s string) string {
 	s = strings.TrimSpace(s)

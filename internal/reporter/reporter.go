@@ -219,6 +219,151 @@ func (r *Reporter) JSON() ([]byte, error) {
 	return json.MarshalIndent(o, "", "  ")
 }
 
+// PrintSummaryReport writes a detailed run summary to the given writer.
+// It includes the plan header, per-wave breakdown with task outcomes and timing,
+// and a footer with totals. The output is also returned as a string for reuse
+// (e.g. as context for Claude narrative summaries).
+func (r *Reporter) PrintSummaryReport(w io.Writer) string {
+	var b strings.Builder
+	mw := io.MultiWriter(w, &b) // write to both output and capture
+
+	// --- Header ---
+	elapsed := r.runDuration()
+
+	statusText := ui.BoldGreen("completed")
+	statusEmoji := "✅"
+	if r.State.Status == "failed" {
+		statusText = ui.BoldRed("failed")
+		statusEmoji = "❌"
+	} else if r.State.Status == "cancelled" {
+		statusText = ui.Yellow("cancelled")
+		statusEmoji = "🚫"
+	}
+
+	fmt.Fprintf(mw, "\n%s %s\n", statusEmoji, ui.BoldCyan("Beadloom Run Summary"))
+	fmt.Fprintf(mw, "%s\n", ui.Cyan("══════════════════════════"))
+	fmt.Fprintf(mw, "Plan:      %s\n", ui.Dim(r.Plan.ID))
+	fmt.Fprintf(mw, "Status:    %s\n", statusText)
+	fmt.Fprintf(mw, "Duration:  %s\n", ui.Bold(elapsed))
+	fmt.Fprintf(mw, "Waves:     %d\n", r.Plan.TotalWaves)
+	fmt.Fprintf(mw, "Tasks:     %d total\n\n", r.Plan.TotalTasks)
+
+	// --- Per-wave breakdown ---
+	for _, wave := range r.Plan.Waves {
+		wStatus := r.waveStatus(wave.Index)
+		fmt.Fprintf(mw, "  🌊 %s %d  %s  (%d tasks)\n",
+			ui.BoldWhite("Wave"), wave.Index+1,
+			ui.WaveStatus(wStatus), len(wave.Tasks))
+
+		for _, task := range wave.Tasks {
+			r.printSummaryTask(mw, task)
+		}
+		fmt.Fprintln(mw)
+	}
+
+	// --- Footer: totals ---
+	completed := 0
+	failed := 0
+	skipped := 0
+	cancelled := 0
+	for _, ss := range r.State.Sessions {
+		switch ss.Status {
+		case state.StatusCompleted:
+			completed++
+		case state.StatusFailed:
+			failed++
+		case state.StatusSkipped:
+			skipped++
+		case state.StatusCancelled:
+			cancelled++
+		}
+	}
+
+	fmt.Fprintf(mw, "%s\n", ui.Cyan("──────────────────────────"))
+	fmt.Fprintf(mw, "Totals:  %s  %s  %s",
+		ui.Green(fmt.Sprintf("%d completed", completed)),
+		ui.Red(fmt.Sprintf("%d failed", failed)),
+		ui.Yellow(fmt.Sprintf("%d skipped", skipped)))
+	if cancelled > 0 {
+		fmt.Fprintf(mw, "  %s", ui.Dim(fmt.Sprintf("%d cancelled", cancelled)))
+	}
+	fmt.Fprintln(mw)
+
+	// Critical path info
+	if len(r.Plan.CriticalPath) > 0 {
+		fmt.Fprintf(mw, "Critical:  %s\n",
+			ui.BoldYellow("⚡ "+strings.Join(r.Plan.CriticalPath, " → ")))
+	}
+
+	// Failed task details
+	if failed > 0 {
+		fmt.Fprintf(mw, "\n%s\n", ui.BoldRed("Failed tasks:"))
+		for taskID, ss := range r.State.Sessions {
+			if ss.Status == state.StatusFailed {
+				durStr := ""
+				if ss.StartedAt != nil && ss.FinishedAt != nil {
+					durStr = fmt.Sprintf(" after %s", ss.FinishedAt.Sub(*ss.StartedAt).Truncate(time.Second))
+				}
+				fmt.Fprintf(mw, "  %s %s%s  %s\n",
+					ui.Red("✗"), ui.BoldMagenta(taskID),
+					ui.Red(durStr),
+					ui.Dim("(log: "+ss.LogFile+")"))
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// printSummaryTask writes a single task line for the summary report.
+func (r *Reporter) printSummaryTask(w io.Writer, task planner.PlannedTask) {
+	ss := r.State.GetSession(task.TaskID)
+
+	status := "pending"
+	durStr := ""
+	if ss != nil {
+		status = string(ss.Status)
+		if ss.StartedAt != nil && ss.FinishedAt != nil {
+			d := ss.FinishedAt.Sub(*ss.StartedAt).Truncate(time.Second)
+			durStr = fmt.Sprintf("%s", d)
+		}
+	}
+
+	icon := ui.StatusIcon(status)
+	critical := " "
+	if task.IsCritical {
+		critical = ui.BoldYellow("⚡")
+	}
+
+	title := task.Title
+	if len(title) > 50 {
+		title = title[:47] + "..."
+	}
+
+	timeCol := ""
+	if durStr != "" {
+		timeCol = ui.Dim(fmt.Sprintf("[%s]", durStr))
+	}
+
+	fmt.Fprintf(w, "    %s %s %-50s %s  %s\n", icon, ui.BoldMagenta(task.TaskID), title, critical, timeCol)
+}
+
+// runDuration returns the total run duration. For finished runs it uses the
+// latest session finish time; for in-progress runs it uses time.Since.
+func (r *Reporter) runDuration() time.Duration {
+	// Try to find the latest finish time across all sessions
+	var latest time.Time
+	for _, ss := range r.State.Sessions {
+		if ss.FinishedAt != nil && ss.FinishedAt.After(latest) {
+			latest = *ss.FinishedAt
+		}
+	}
+	if !latest.IsZero() {
+		return latest.Sub(r.StartTime).Truncate(time.Second)
+	}
+	return time.Since(r.StartTime).Truncate(time.Second)
+}
+
 // Summary returns a final summary string.
 func (r *Reporter) Summary() string {
 	var b strings.Builder
