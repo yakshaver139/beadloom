@@ -1,11 +1,13 @@
 package state
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,11 +57,51 @@ type SessionState struct {
 	LogFile    string        `json:"log_file"`
 }
 
+// ensureGitignore adds .beadloom to .gitignore if not already present.
+func ensureGitignore() {
+	const entry = ".beadloom"
+	const gitignore = ".gitignore"
+
+	// Check if already present
+	if f, err := os.Open(gitignore); err == nil {
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			if strings.TrimSpace(scanner.Text()) == entry {
+				f.Close()
+				return
+			}
+		}
+		f.Close()
+	}
+
+	// Append entry
+	f, err := os.OpenFile(gitignore, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	// Check if file needs a leading newline
+	if info, err := f.Stat(); err == nil && info.Size() > 0 {
+		buf := make([]byte, 1)
+		if rf, err := os.Open(gitignore); err == nil {
+			rf.Seek(info.Size()-1, 0)
+			rf.Read(buf)
+			rf.Close()
+			if buf[0] != '\n' {
+				f.WriteString("\n")
+			}
+		}
+	}
+	f.WriteString(entry + "\n")
+}
+
 // New creates a new RunState and persists it.
 func New(planID string, totalWaves int, totalTasks int) (*RunState, error) {
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
+	ensureGitignore()
 
 	s := &RunState{
 		PlanID:     planID,

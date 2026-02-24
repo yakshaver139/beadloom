@@ -335,7 +335,7 @@ func (o *Orchestrator) cascadeSkip(failedID string, finished map[string]bool, pe
 	return skipped
 }
 
-// markSkipped records a task as skipped in both session state and persistent state.
+// markSkipped records a task as skipped in both session state, persistent state, and beads.
 func (o *Orchestrator) markSkipped(taskID string) {
 	now := time.Now()
 	o.mu.Lock()
@@ -351,6 +351,12 @@ func (o *Orchestrator) markSkipped(taskID string) {
 		FinishedAt: &now,
 	}
 	o.State.UpdateSession(taskID, st)
+
+	// Update beads — move back to open so it can be retried in a future run
+	if err := o.Worktrees.Client.Update(taskID, "open", ""); err != nil {
+		fmt.Fprintf(os.Stderr, "  %s bd update %s --status open: %v\n", ui.Yellow("⚠"), taskID, err)
+	}
+
 	fmt.Fprintf(os.Stderr, "  ⊘ %s %s\n", ui.TaskPrefix(taskID), ui.Yellow("Skipped (predecessor failed)"))
 }
 

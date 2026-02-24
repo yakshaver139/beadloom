@@ -67,16 +67,31 @@ func Execute() {
 and parallelizable work, then spawns multiple Claude Code sessions across
 git worktrees to execute tasks concurrently.
 
-Alias: this command is also available as %q.`, binName, alias),
+Workflow:
+  1. %s plan          Analyze the task graph and preview execution waves
+  2. %s run           Execute tasks (plans automatically if no --plan file)
+  3. %s status        Monitor progress (use --watch for live updates)
+  4. %s merge         Squash-merge completed branches back into main
+
+Visualisation:
+  %s viz             Print an ASCII DAG or DOT graph of the plan
+  %s view            Open an interactive browser visualiser
+
+Utilities:
+  %s infer-deps      Use Claude to infer task dependencies from titles
+  %s cancel          Abort running agent sessions
+
+Alias: this command is also available as %q.`, binName,
+			binName, binName, binName, binName, binName, binName, binName, binName, alias),
 	}
 
-	// Global flags
-	rootCmd.PersistentFlags().StringVar(&flagDB, "db", "", "Beads database path")
+	// Global flags (available to all subcommands)
+	rootCmd.PersistentFlags().StringVar(&flagDB, "db", "", "Path to .beads database (default: auto-detect)")
 	rootCmd.PersistentFlags().IntVar(&flagMaxParallel, "max-parallel", 4, "Max concurrent agent sessions")
-	rootCmd.PersistentFlags().BoolVar(&flagSafe, "safe", false, "Do NOT pass --dangerously-skip-permissions to Claude")
-	rootCmd.PersistentFlags().StringVar(&flagTimeout, "timeout", "30m", "Per-task timeout")
-	rootCmd.PersistentFlags().StringVar(&flagWorktreeDir, "worktree-dir", ".worktrees", "Directory for worktrees")
-	rootCmd.PersistentFlags().StringVar(&flagPromptTemplate, "prompt-template", "", "Custom agent prompt template path")
+	rootCmd.PersistentFlags().BoolVar(&flagSafe, "safe", false, "Require Claude permission prompts (omit --dangerously-skip-permissions)")
+	rootCmd.PersistentFlags().StringVar(&flagTimeout, "timeout", "30m", "Per-task timeout (e.g. 10m, 1h)")
+	rootCmd.PersistentFlags().StringVar(&flagWorktreeDir, "worktree-dir", ".worktrees", "Base directory for git worktrees")
+	rootCmd.PersistentFlags().StringVar(&flagPromptTemplate, "prompt-template", "", "Path to custom agent prompt template")
 	rootCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "Machine-readable JSON output")
 
 	rootCmd.AddCommand(planCmd())
@@ -136,15 +151,36 @@ func buildPlan() (*planner.ExecutionPlan, *graph.TaskGraph, *cpm.CPMResult, erro
 	return plan, g, result, nil
 }
 
+// syncBeadsBlockedStatus updates the beads database to reflect dependency state:
+// tasks with unmet predecessors are marked "blocked", root tasks stay "open".
+func syncBeadsBlockedStatus(plan *planner.ExecutionPlan) {
+	client := bd.NewClient("", flagDB)
+	for id := range plan.Tasks {
+		if len(plan.Deps.Predecessors[id]) > 0 {
+			if err := client.Update(id, "blocked", ""); err != nil {
+				fmt.Fprintf(os.Stderr, "  %s bd update %s --status blocked: %v\n", ui.Yellow("⚠"), id, err)
+			}
+		}
+	}
+}
+
 func planCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plan",
 		Short: "Analyze task graph and compute execution plan",
+		Long: `Reads open tasks from the Beads database, computes the critical path,
+and generates a wave-based execution plan showing which tasks can run
+in parallel and which must wait for dependencies.
+
+Use --json or --output to save the plan for later use with 'run --plan'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			plan, g, result, err := buildPlan()
 			if err != nil {
 				return err
 			}
+
+			// Sync dependency state to beads (mark blocked tasks)
+			syncBeadsBlockedStatus(plan)
 
 			if flagJSON {
 				return outputJSON(plan)
@@ -178,6 +214,12 @@ func runCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Execute the plan (or plan + run in one shot)",
+		Long: `Spawns Claude Code agent sessions in git worktrees to execute tasks.
+Plans automatically from the Beads database unless --plan is provided.
+
+In wave-barrier mode (--automerge), completed branches are squash-merged
+back into the current branch at wave boundaries so that later waves see
+upstream changes. Use --git-trace to debug merge issues.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var plan *planner.ExecutionPlan
 
@@ -197,6 +239,9 @@ func runCmd() *cobra.Command {
 					return err
 				}
 			}
+
+			// Sync dependency state to beads (mark blocked tasks)
+			syncBeadsBlockedStatus(plan)
 
 			if flagDryRun {
 				if flagJSON {
@@ -284,6 +329,12 @@ func statusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show running sessions and progress",
+		Long: `Displays the current state of a beadloom run including wave progress,
+per-task status, and timing information.
+
+Use --watch for a live-updating dashboard, --previous to review the last
+completed run, or --plan <id> to inspect a specific historical run.
+Use --logs <task-id> to stream agent output for a specific task.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate flag combinations
 			if flagWatch && (flagPrevious || flagPlanID != "") {
@@ -409,7 +460,11 @@ func statusCmd() *cobra.Command {
 func cancelCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cancel [task-id]",
-		Short: "Abort running sessions",
+		Short: "Abort running agent sessions",
+		Long: `Sends SIGTERM to running agent processes. With no arguments, cancels all
+active sessions. Pass a task ID to cancel a single task.
+
+Use --force to send SIGKILL instead of SIGTERM.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !state.Exists() {
 				return fmt.Errorf("no active beadloom run")
@@ -689,7 +744,10 @@ func mergeMode(noSquash bool) string {
 func vizCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "viz",
-		Short: "Print ASCII DAG of the execution plan",
+		Short: "Print the execution plan as an ASCII DAG or DOT graph",
+		Long: `Renders the task dependency graph to the terminal. Defaults to an ASCII
+representation grouped by wave. Use --format=dot to output a Graphviz
+DOT file (pipe to 'dot -Tpng' to render an image).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			plan, g, result, err := buildPlan()
 			if err != nil {
@@ -955,9 +1013,12 @@ func inferDepsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "infer-deps",
-		Short: "Use Claude to infer task dependencies from titles",
-		Long: `Sends open task titles to Claude and infers dependency edges.
-By default runs in dry-run mode — use --apply to write deps to beads.`,
+		Short: "Use Claude to infer task dependencies from titles and descriptions",
+		Long: `Sends open task titles to Claude and infers dependency edges using AI.
+Validates results (filters unknown IDs, self-deps, cycles) before output.
+
+By default runs in dry-run mode — use --apply to write deps to beads.
+Use --from-file to replay a saved JSON result without calling Claude.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client := bd.NewClient("", flagDB)
 

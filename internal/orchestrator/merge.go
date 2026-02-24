@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -21,6 +22,22 @@ func (o *Orchestrator) mergeWaveBranches(ctx context.Context, wave planner.Execu
 	trace := o.Config.GitTrace
 	merged := 0
 	var mergedBranches []string
+
+	// Commit the dolt working set inside .beads/ so dolt's git merge hooks
+	// don't warn about "local changes would be stomped". The bd CLI (close,
+	// update) modifies the dolt working set but doesn't always commit it;
+	// if the working set is dirty when git merge triggers dolt's hooks, dolt
+	// refuses to merge its internal import branch.
+	doltCommit := exec.Command("dolt", "add", ".")
+	doltCommit.Dir = ".beads"
+	if out, err := doltCommit.CombinedOutput(); err != nil && trace {
+		fmt.Fprintf(os.Stderr, "  %s dolt add: %s\n", ui.Dim("GIT>"), strings.TrimSpace(string(out)))
+	}
+	doltCommit = exec.Command("dolt", "commit", "--allow-empty", "-m", "beadloom: sync before merge")
+	doltCommit.Dir = ".beads"
+	if out, err := doltCommit.CombinedOutput(); err != nil && trace {
+		fmt.Fprintf(os.Stderr, "  %s dolt commit: %s\n", ui.Dim("GIT>"), strings.TrimSpace(string(out)))
+	}
 
 	for _, task := range wave.Tasks {
 		if !completedIDs[task.TaskID] {

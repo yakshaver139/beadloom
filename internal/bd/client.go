@@ -91,7 +91,9 @@ type RawTask struct {
 	Blocks    []string `json:"-"`
 }
 
-// ListOpen returns all open tasks as JSON.
+// ListOpen returns all open and blocked tasks as JSON.
+// Both statuses are included because beadloom marks tasks with unmet
+// dependencies as "blocked" — they still need to be part of the plan.
 func (c *Client) ListOpen() ([]RawTask, error) {
 	out, err := c.run("list", "--json", "--status", "open", "--limit", "0")
 	if err != nil {
@@ -101,6 +103,16 @@ func (c *Client) ListOpen() ([]RawTask, error) {
 	if err := json.Unmarshal(out, &tasks); err != nil {
 		return nil, fmt.Errorf("parse bd list output: %w", err)
 	}
+
+	// Also include blocked tasks (beadloom sets this status for tasks with deps)
+	blockedOut, err := c.run("list", "--json", "--status", "blocked", "--limit", "0")
+	if err == nil {
+		var blocked []RawTask
+		if err := json.Unmarshal(blockedOut, &blocked); err == nil {
+			tasks = append(tasks, blocked...)
+		}
+	}
+
 	return tasks, nil
 }
 

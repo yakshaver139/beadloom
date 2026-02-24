@@ -4,6 +4,10 @@
 # Beads local database
 .beads/
 
+# Beadloom run state
+.beadloom/
+beadloom.log
+
 # IDE / editor
 .vscode/
 
