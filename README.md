@@ -14,14 +14,14 @@ Beadloom reads a task graph from a Beads database, computes critical paths and p
 ## Installation
 
 ```bash
-go install github.com/yakshaver139/beadloom/cmd/beadloom@latest
-go install github.com/yakshaver139/beadloom/cmd/bdl@latest
+go install github.com/joshharrison/beadloom/cmd/beadloom@latest
+go install github.com/joshharrison/beadloom/cmd/bdl@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/yakshaver139/beadloom
+git clone https://github.com/joshharrison/beadloom
 cd beadloom && make install
 ```
 
@@ -93,7 +93,7 @@ Beadloom identifies that:
 - **Wave 2** must run JSON contract for graph next (only depends on schema)
 - **Wave 3** can run API and UI **in parallel**
 - **Wave 4** can write integration tests and docs **in parallel**
--- **Wave 5** The deployment pipeline is the final step
+- **Wave 5** The deployment pipeline is the final step
 - The **critical path** is schema -> API -> tests -> deploy (any delay here delays everything)
 
 Running `beadloom run --max-parallel 2` then:
@@ -161,6 +161,7 @@ beadloom run --plan plan.json          # run from saved plan
 beadloom run --max-parallel 2          # limit concurrent agents
 beadloom run --timeout 45m             # per-task timeout
 beadloom run --dry-run                 # show what would happen
+beadloom run --quiet                   # suppress streaming agent output
 beadloom run --automerge               # merge branches at wave boundaries
 beadloom run --automerge --git-trace   # log every git command for debugging
 ```
@@ -173,6 +174,8 @@ Monitor running sessions:
 beadloom status                        # show current progress
 beadloom status --watch                # auto-refresh every 5s
 beadloom status --logs bd-a1b2         # show logs for a specific task
+beadloom status --previous             # show most recent completed run
+beadloom status --plan <id>            # show a specific historical run
 beadloom status --json                 # machine-readable output
 ```
 
@@ -186,6 +189,29 @@ beadloom cancel bd-a1b2                # cancel specific task
 beadloom cancel --force                # SIGKILL instead of SIGTERM
 ```
 
+### `beadloom merge`
+
+Merge completed worktree branches and clean up:
+
+```bash
+beadloom merge                         # squash-merge all completed branches
+beadloom merge --no-squash             # use regular merge commits instead
+beadloom merge --no-cleanup            # skip worktree and branch cleanup
+beadloom merge --dry-run               # show what would be merged
+```
+
+### `beadloom summarise`
+
+Print a structured run summary (alias: `summarize`):
+
+```bash
+beadloom summarise                     # summarise the current/last run
+beadloom summarise --previous          # summarise most recent completed run
+beadloom summarise --plan <id>         # summarise a specific historical run
+beadloom summarise --include-agent-results  # send agent logs to Claude for a narrative summary
+beadloom summarise --model claude-sonnet-4-6 # model override for narrative
+```
+
 ### `beadloom infer-deps`
 
 Use Claude to infer task dependencies from titles:
@@ -194,12 +220,13 @@ Use Claude to infer task dependencies from titles:
 beadloom infer-deps                    # dry-run: show inferred deps
 beadloom infer-deps --apply            # write deps to beads via bd dep add
 beadloom infer-deps --model claude-sonnet-4-6  # use a specific model
+beadloom infer-deps --from-file deps.json     # replay saved results without calling Claude
 beadloom infer-deps --json             # machine-readable output
 ```
 
-Sends open task summaries (ID, title, priority, type) to Claude, which returns dependency edges with reasons. Edges are validated (unknown IDs and self-deps are dropped) and checked for cycles before being applied. Useful for bootstrapping a dependency graph on a project with many independent tasks.
+Sends open task summaries (ID, title, priority, type) to Claude, which returns dependency edges with reasons. Edges are validated (unknown IDs and self-deps are dropped) and checked for cycles before being applied. Use `--from-file` to replay previously saved results without calling Claude. Useful for bootstrapping a dependency graph on a project with many independent tasks.
 
-Requires the `ANTHROPIC_API_KEY` environment variable to be set.
+Requires the `ANTHROPIC_API_KEY` environment variable to be set (unless using `--from-file`).
 
 ### `beadloom viz`
 
@@ -299,7 +326,7 @@ beadloom/
 ├── internal/
 │   ├── cli/                # Shared CLI logic (cobra commands, flags, helpers)
 │   ├── bd/                 # bd CLI wrapper (list, show, dep, worktree, close)
-│   ├── claude/             # Claude API client (dependency inference)
+│   ├── claude/             # Claude API client (dependency inference, run summaries)
 │   ├── graph/              # Task DAG builder + cycle detection
 │   ├── cpm/                # Critical Path Method analyzer
 │   ├── planner/            # Execution plan + prompt generation
@@ -307,7 +334,9 @@ beadloom/
 │   ├── orchestrator/       # Wave execution engine + Claude agent spawning
 │   ├── reporter/           # Terminal status display + JSON output
 │   ├── state/              # Persistent state (.beadloom/state.json)
-│   └── viewer/             # Embedded HTTP server + SPA for `beadloom view`
+│   ├── viewer/             # Embedded HTTP server + SPA for `beadloom view`
+│   ├── ui/                 # Terminal styling + streaming output helpers
+│   └── assets/             # Embedded logo asset
 ├── beadloom_visualiser/    # React Flow browser UI source (git submodule)
 └── templates/              # Default agent prompt template
 ```
