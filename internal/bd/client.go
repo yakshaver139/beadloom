@@ -261,6 +261,33 @@ func (c *Client) Sync() error {
 	return err
 }
 
+// SyncBranch returns the configured sync branch name (from bd init --branch).
+// Returns an empty string if no sync branch is configured.
+func (c *Client) SyncBranch() (string, error) {
+	out, err := c.run("config", "get", "sync.branch")
+	if err != nil {
+		// Not configured — this is the common case, not an error
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// SyncStatus returns the output of bd sync --status, showing what's changed
+// on the metadata branch.
+func (c *Client) SyncStatus() (string, error) {
+	out, err := c.run("sync", "--status")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// SyncMerge runs bd sync --merge to merge the sync branch into main.
+func (c *Client) SyncMerge() error {
+	_, err := c.run("sync", "--merge")
+	return err
+}
+
 // WorktreeList lists all worktrees.
 func (c *Client) WorktreeList() ([]WorktreeInfo, error) {
 	out, err := c.run("worktree", "list", "--json")

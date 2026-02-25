@@ -36,6 +36,11 @@ func (m *Manager) Create(name, branch string) (string, error) {
 	// If a worktree directory already exists (e.g. from a previous run or
 	// incomplete cleanup), remove it so we get a fresh checkout from HEAD.
 	if _, err := os.Stat(wtPath); err == nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ Worktree already exists at %s, cleaning up stale state...\n", wtPath)
+		fmt.Fprintf(os.Stderr, "    If this persists, you can manually resolve with:\n")
+		fmt.Fprintf(os.Stderr, "      rm -rf %s\n", wtPath)
+		fmt.Fprintf(os.Stderr, "      git worktree prune\n")
+		fmt.Fprintf(os.Stderr, "      bd dolt stop && bd dolt start\n")
 		exec.Command("git", "worktree", "remove", "--force", wtPath).Run()
 		os.RemoveAll(wtPath)
 		exec.Command("git", "worktree", "prune").Run()

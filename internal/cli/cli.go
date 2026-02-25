@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -403,6 +404,9 @@ upstream changes. Use --git-trace to debug merge issues.`,
 			client := bd.NewClient("", flagDB)
 			wm := worktree.NewManager(flagWorktreeDir, client)
 
+			// Detect sync branch for protected-branch workflow
+			syncBranch, _ := client.SyncBranch()
+
 			orch := orchestrator.New(plan, wm, orchestrator.Config{
 				MaxParallel:    flagMaxParallel,
 				Safe:           flagSafe,
@@ -412,6 +416,7 @@ upstream changes. Use --git-trace to debug merge issues.`,
 				TimeoutPerTask: timeout,
 				WorktreeDir:    flagWorktreeDir,
 				DbPath:         flagDB,
+				SyncBranch:     syncBranch,
 			})
 
 			if !flagJSON {
@@ -431,8 +436,11 @@ upstream changes. Use --git-trace to debug merge issues.`,
 					fmt.Fprintf(os.Stderr, "\n%s\n", ui.BoldWhite("To recover:"))
 					fmt.Fprintf(os.Stderr, "  1. Review the conflict in the worktree branch listed above\n")
 					fmt.Fprintf(os.Stderr, "  2. Resolve manually: git merge --abort, then merge or cherry-pick as needed\n")
-					fmt.Fprintf(os.Stderr, "  3. Clean up worktrees:  git worktree list && git worktree remove <path>\n")
-					fmt.Fprintf(os.Stderr, "  4. Re-run:             bdl run %s\n", strings.Join(os.Args[2:], " "))
+					fmt.Fprintf(os.Stderr, "  3. Resolve Dolt (beads) conflicts:\n")
+					fmt.Fprintf(os.Stderr, "       bd vc conflicts     # View conflicts\n")
+					fmt.Fprintf(os.Stderr, "       bd vc resolve       # Resolve conflicts\n")
+					fmt.Fprintf(os.Stderr, "  4. Clean up worktrees:  git worktree list && git worktree remove <path>\n")
+					fmt.Fprintf(os.Stderr, "  5. Re-run:             bdl run %s\n", strings.Join(os.Args[2:], " "))
 					fmt.Fprintf(os.Stderr, "\n  Completed tasks (closed in beads) will be skipped on re-run.\n")
 				} else if strings.Contains(errStr, "critical task") {
 					fmt.Fprintf(os.Stderr, "\n%s\n", ui.BoldWhite("To recover:"))
@@ -448,6 +456,40 @@ upstream changes. Use --git-trace to debug merge issues.`,
 
 			rpt := reporter.New(plan, orch.State)
 			fmt.Println(rpt.Summary())
+
+			// Interactive merge prompt in non-automerge mode
+			if !flagAutomerge {
+				branches, brErr := wm.ListBranches()
+				if brErr == nil && len(branches) > 0 {
+					fmt.Fprintf(os.Stderr, "\n%s %d beadloom branches ready to merge:\n", ui.BoldWhite("Pending:"), len(branches))
+					for _, b := range branches {
+						fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Cyan("→"), ui.BoldMagenta(b))
+					}
+					if syncBranch != "" {
+						if status, sErr := client.SyncStatus(); sErr == nil && status != "" {
+							fmt.Fprintf(os.Stderr, "\n%s\n%s\n", ui.BoldWhite("Sync status:"), status)
+						}
+					}
+					fmt.Fprintln(os.Stderr)
+					if confirmPrompt("Merge these changes? (y/N) ") {
+						fmt.Fprintf(os.Stderr, "\n🧵 Merging branches...\n")
+						mergeArgs := []string{"merge"}
+						if flagDB != "" {
+							mergeArgs = append([]string{"--db", flagDB}, mergeArgs...)
+						}
+						mergeCmd := exec.Command(os.Args[0], mergeArgs...)
+						mergeCmd.Stdout = os.Stdout
+						mergeCmd.Stderr = os.Stderr
+						mergeCmd.Stdin = os.Stdin
+						if mErr := mergeCmd.Run(); mErr != nil {
+							return fmt.Errorf("merge: %w", mErr)
+						}
+					} else {
+						fmt.Fprintf(os.Stderr, "Skipped. Run `bdl merge` when ready.\n")
+					}
+				}
+			}
+
 			return nil
 		},
 	}
@@ -753,6 +795,9 @@ regular merge commits.`,
 						}
 						fmt.Printf("  %s %s — merge conflict\n", ui.Red("✗"), ui.BoldMagenta(branch))
 						fmt.Printf("\n%s Stopped at %s due to conflict. Resolve manually.\n", ui.BoldRed("Error:"), branch)
+						fmt.Printf("\nTo resolve Dolt (beads) conflicts:\n")
+						fmt.Printf("  bd vc conflicts     # View conflicts\n")
+						fmt.Printf("  bd vc resolve       # Resolve conflicts\n")
 						return fmt.Errorf("merge conflict on branch %s", branch)
 					}
 				} else {
@@ -768,6 +813,9 @@ regular merge commits.`,
 						}
 						fmt.Printf("  %s %s — merge conflict\n", ui.Red("✗"), ui.BoldMagenta(branch))
 						fmt.Printf("\n%s Stopped at %s due to conflict. Resolve manually.\n", ui.BoldRed("Error:"), branch)
+						fmt.Printf("\nTo resolve Dolt (beads) conflicts:\n")
+						fmt.Printf("  bd vc conflicts     # View conflicts\n")
+						fmt.Printf("  bd vc resolve       # Resolve conflicts\n")
 						return fmt.Errorf("merge conflict on branch %s", branch)
 					}
 
@@ -825,6 +873,16 @@ regular merge commits.`,
 				// Sync bd worktree state
 				client.Sync()
 
+				// If a sync branch is configured, merge beads metadata
+				if syncBranch, _ := client.SyncBranch(); syncBranch != "" {
+					fmt.Printf("🔄 Syncing beads metadata branch (%s)...\n", syncBranch)
+					if syncErr := client.SyncMerge(); syncErr != nil {
+						fmt.Printf("  %s bd sync --merge: %v\n", ui.Yellow("⚠"), syncErr)
+					} else {
+						fmt.Printf("  %s Beads metadata synced\n", ui.Green("✓"))
+					}
+				}
+
 				// Warn about branches that weren't merged
 				var skipped []string
 				for _, r := range results {
@@ -879,6 +937,18 @@ func mergeMode(noSquash bool) string {
 		return "no-ff merge"
 	}
 	return "squash"
+}
+
+// confirmPrompt prints msg and reads a single line from stdin.
+// Returns true only if the user types "y" or "Y".
+func confirmPrompt(msg string) bool {
+	fmt.Fprint(os.Stderr, msg)
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		return false
+	}
+	answer := strings.TrimSpace(scanner.Text())
+	return answer == "y" || answer == "Y"
 }
 
 func summariseCmd() *cobra.Command {

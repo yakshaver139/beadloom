@@ -15,6 +15,7 @@ type Config struct {
 	DbPath         string
 	ClaudeBin      string // path to claude binary (default: "claude")
 	GitTrace       bool   // log every git command and its output to stderr
+	SyncBranch     string // bd sync branch (from bd init --branch); empty if not configured
 }
 
 // SessionStatus represents the status of an agent session.

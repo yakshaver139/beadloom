@@ -196,6 +196,17 @@ func (o *Orchestrator) runWaveMode() error {
 
 	o.updateCurrentWave()
 	o.State.SetStatus("completed")
+
+	// If a sync branch is configured, merge beads metadata into main
+	if o.Config.SyncBranch != "" {
+		fmt.Fprintf(os.Stderr, "\n🔄 Syncing beads metadata branch (%s)...\n", o.Config.SyncBranch)
+		if err := o.Worktrees.Client.SyncMerge(); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s bd sync --merge: %v\n", ui.Yellow("⚠"), err)
+		} else {
+			fmt.Fprintf(os.Stderr, "  %s Beads metadata synced\n", ui.Green("✓"))
+		}
+	}
+
 	return nil
 }
 

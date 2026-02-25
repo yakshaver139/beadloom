@@ -51,7 +51,7 @@ func (o *Orchestrator) mergeWaveBranches(ctx context.Context, wave planner.Execu
 		out, err := runGit(trace, ".", "merge", "--squash", branch)
 		if err != nil {
 			runGit(trace, ".", "merge", "--abort")
-			return merged, fmt.Errorf("merge conflict on %s: %s", branch, strings.TrimSpace(string(out)))
+			return merged, fmt.Errorf("merge conflict on %s: %s\n\nTo resolve Dolt (beads) conflicts:\n  bd vc conflicts     # View conflicts\n  bd vc resolve       # Resolve conflicts", branch, strings.TrimSpace(string(out)))
 		}
 
 		// Stage beads state (but not the redirect file)
