@@ -322,7 +322,12 @@ Plans automatically from the Beads database unless --plan is provided.
 
 In wave-barrier mode (--automerge), completed branches are squash-merged
 back into the current branch at wave boundaries so that later waves see
-upstream changes. Use --git-trace to debug merge issues.`,
+upstream changes. If a bd sync branch is configured (bd init --branch),
+beads metadata is automatically synced after the run.
+
+In dynamic mode (default), after a successful run you will be prompted
+to merge pending branches interactively. Use --git-trace to debug merge
+issues.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Ensure a .gitignore exists so agent output doesn't pollute git
 			ensureGitignore()
@@ -711,10 +716,12 @@ func mergeCmd() *cobra.Command {
 		Use:   "merge",
 		Short: "Merge completed worktree branches and clean up",
 		Long: `Merges all beadloom/* branches back into the current branch, then
-deletes the branches and cleans up worktree state.
+deletes the branches and cleans up worktree state. If a bd sync branch
+is configured, beads metadata is also synced after merging.
 
 By default uses squash merges for a clean history. Use --no-squash for
-regular merge commits.`,
+regular merge commits. On merge conflicts, bd vc commands are suggested
+for resolving Dolt-level conflicts.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client := bd.NewClient("", flagDB)
 			wm := worktree.NewManager(flagWorktreeDir, client)

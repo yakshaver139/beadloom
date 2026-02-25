@@ -166,6 +166,8 @@ beadloom run --automerge               # merge branches at wave boundaries
 beadloom run --automerge --git-trace   # log every git command for debugging
 ```
 
+In dynamic mode (the default), after a successful run you will be prompted to merge pending branches interactively.
+
 ### `beadloom status`
 
 Monitor running sessions:
@@ -199,6 +201,8 @@ beadloom merge --no-squash             # use regular merge commits instead
 beadloom merge --no-cleanup            # skip worktree and branch cleanup
 beadloom merge --dry-run               # show what would be merged
 ```
+
+If a bd sync branch is configured (`bd init --branch`), beads metadata is automatically synced after merging.
 
 ### `beadloom summarise`
 
@@ -258,7 +262,7 @@ The visualiser frontend is embedded in the Go binary — no Node.js runtime requ
 1. **Graph Building** -- Queries `bd list --json --status open` for all open tasks, then `bd dep list <id>` for each to build a directed acyclic graph (DAG). Detects cycles defensively.
 2. **Critical Path Analysis** -- Runs the Critical Path Method (CPM): Kahn's topological sort, forward pass (earliest start/finish), backward pass (latest start/finish), slack calculation. Tasks with zero slack form the critical path.
 3. **Wave Computation** -- Groups tasks by earliest start time into parallel waves. Tasks in the same wave have no inter-dependencies and can run concurrently.
-4. **Execution** -- By default, uses a dynamic scheduler that dispatches tasks the moment all predecessors complete. With `--automerge`, switches to wave-barrier mode: all tasks in wave N complete, their changes are auto-committed, then their branches are squash-merged into the current branch before wave N+1 starts. Creates git worktrees via `bd worktree create` (which sets up beads database redirects automatically) and spawns Claude Code sessions with generated prompts. Critical path failures halt the pipeline; non-critical failures log warnings and continue. Use `--git-trace` to log every git command and its output for debugging merge issues.
+4. **Execution** -- By default, uses a dynamic scheduler that dispatches tasks the moment all predecessors complete. With `--automerge`, switches to wave-barrier mode: all tasks in wave N complete, their changes are auto-committed, then their branches are squash-merged into the current branch before wave N+1 starts. Creates git worktrees via `bd worktree create` (which sets up beads database redirects automatically) and spawns Claude Code sessions with generated prompts. Critical path failures halt the pipeline; non-critical failures log warnings and continue. Use `--git-trace` to log every git command and its output for debugging merge issues. If a bd sync branch is configured, beads metadata is automatically synced at the end of the run.
 5. **Reporting** -- Real-time terminal status, JSON output, persistent state in `.beadloom/state.json` (works across terminal sessions).
 
 ## Global Flags
@@ -315,6 +319,9 @@ Beadloom is tested against `bd` v0.52+. It uses these `bd` commands:
 | `bd update <id> --status blocked --append-notes "..."` | Mark task as blocked |
 | `bd ready --json --limit 0` | List ready (unblocked) tasks |
 | `bd dep add <blocked> <blocker>` | Add a dependency edge |
+| `bd config get sync.branch` | Detect protected-branch sync configuration |
+| `bd sync --status` | Show pending metadata changes on sync branch |
+| `bd sync --merge` | Merge sync branch into main |
 
 ## Architecture
 
@@ -343,7 +350,9 @@ beadloom/
 
 ## Edge Cases
 
-- **Merge conflicts**: Each worktree gets its own branch (`beadloom/<task-id>`), so no conflicts during execution. Conflicts arise at merge time. With `--automerge`, conflicts at a wave boundary halt the run so you can resolve manually. Without it, use `beadloom merge` or your normal PR workflow after the run.
+- **Merge conflicts**: Each worktree gets its own branch (`beadloom/<task-id>`), so no conflicts during execution. Conflicts arise at merge time. With `--automerge`, conflicts at a wave boundary halt the run so you can resolve manually. Without it, use `beadloom merge` or your normal PR workflow after the run. On Dolt-level conflicts, `bd vc conflicts` and `bd vc resolve` commands are suggested for resolution.
+- **Protected branches**: If your repo uses a bd sync branch (`bd init --branch`), beadloom automatically syncs beads metadata after merging. Use `bd sync --status` to check pending changes and `bd sync --merge` to merge the sync branch into main.
+- **Stale worktrees**: Beadloom detects and cleans up stale worktrees from interrupted runs automatically. If automatic cleanup fails, you can manually remove them with `bd worktree remove <path>` or `git worktree remove <path>`.
 - **Agent failures**: Critical path failures halt the pipeline. Non-critical failures log warnings and continue. Failed task worktrees are preserved for inspection.
 - **Database contention**: All worktrees share the same beads database (via `bd worktree` redirects). `bd` uses file-level locking for writes. Beadloom automatically retries `bd` commands that fail due to dolt lock contention (up to 3 retries with exponential backoff).
 - **Resource limits**: Each Claude session consumes significant memory/API quota. Default of 4 concurrent sessions is conservative.
