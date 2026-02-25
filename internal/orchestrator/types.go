@@ -15,7 +15,8 @@ type Config struct {
 	DbPath         string
 	ClaudeBin      string // path to claude binary (default: "claude")
 	GitTrace       bool   // log every git command and its output to stderr
-	SyncBranch     string // bd sync branch (from bd init --branch); empty if not configured
+	SyncBranch     string                             // bd sync branch (from bd init --branch); empty if not configured
+	OnWaveComplete func(waveIndex int, branches []string) bool // called at wave boundary in non-automerge mode
 }
 
 // SessionStatus represents the status of an agent session.

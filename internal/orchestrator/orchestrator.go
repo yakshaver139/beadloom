@@ -54,9 +54,9 @@ func New(plan *planner.ExecutionPlan, wm *worktree.Manager, cfg Config) *Orchest
 	}
 }
 
-// Run executes the plan. When Automerge is enabled, it uses wave-barrier
-// execution (all tasks in wave N complete and merge before wave N+1 starts).
-// Otherwise it uses the dynamic dependency-tracking scheduler.
+// Run executes the plan using wave-barrier scheduling. All tasks in wave N
+// complete before wave N+1 starts. At each wave boundary, automerge mode
+// merges automatically; interactive mode calls the OnWaveComplete callback.
 func (o *Orchestrator) Run(ctx context.Context) error {
 	o.ctx, o.cancelFunc = context.WithCancel(ctx)
 	defer o.cancelFunc()
@@ -92,10 +92,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}
 	}()
 
-	if o.Config.Automerge {
-		return o.runWaveMode()
-	}
-	return o.runDynamic()
+	return o.runWaveMode()
 }
 
 // runWaveMode executes waves sequentially with automerge at wave boundaries.
@@ -107,8 +104,12 @@ func (o *Orchestrator) runWaveMode() error {
 	sem := make(chan struct{}, o.Config.MaxParallel)
 	var wtMu sync.Mutex
 
-	fmt.Fprintf(os.Stderr, "\n🚀 %s (%d tasks, %d waves, max %d parallel, automerge on)\n",
-		ui.BoldCyan("Wave-barrier scheduler started"), totalTasks, len(o.Plan.Waves), o.Config.MaxParallel)
+	mergeMode := "interactive merge"
+	if o.Config.Automerge {
+		mergeMode = "automerge on"
+	}
+	fmt.Fprintf(os.Stderr, "\n🚀 %s (%d tasks, %d waves, max %d parallel, %s)\n",
+		ui.BoldCyan("Wave-barrier scheduler started"), totalTasks, len(o.Plan.Waves), o.Config.MaxParallel, mergeMode)
 
 	finished := make(map[string]bool, totalTasks)
 	pending := make(map[string]int, totalTasks)
@@ -182,15 +183,29 @@ func (o *Orchestrator) runWaveMode() error {
 
 		o.updateCurrentWave()
 
-		// Automerge completed branches from this wave
+		// Merge completed branches from this wave
 		if len(completedIDs) > 0 {
-			fmt.Fprintf(os.Stderr, "\n🧵 Merging wave %d branches...\n", wave.Index+1)
-			merged, err := o.mergeWaveBranches(o.ctx, wave, completedIDs)
-			if err != nil {
-				o.State.SetStatus("failed")
-				return fmt.Errorf("automerge wave %d: %w", wave.Index+1, err)
+			var branches []string
+			for _, task := range wave.Tasks {
+				if completedIDs[task.TaskID] {
+					branches = append(branches, task.BranchName)
+				}
 			}
-			fmt.Fprintf(os.Stderr, "  🏁 Merged %d/%d branches from wave %d\n", merged, len(completedIDs), wave.Index+1)
+
+			shouldMerge := o.Config.Automerge
+			if !shouldMerge && o.Config.OnWaveComplete != nil {
+				shouldMerge = o.Config.OnWaveComplete(wave.Index, branches)
+			}
+
+			if shouldMerge {
+				fmt.Fprintf(os.Stderr, "\n🧵 Merging wave %d branches...\n", wave.Index+1)
+				merged, err := o.mergeWaveBranches(o.ctx, wave, completedIDs)
+				if err != nil {
+					o.State.SetStatus("failed")
+					return fmt.Errorf("merge wave %d: %w", wave.Index+1, err)
+				}
+				fmt.Fprintf(os.Stderr, "  🏁 Merged %d/%d branches from wave %d\n", merged, len(completedIDs), wave.Index+1)
+			}
 		}
 	}
 
@@ -339,8 +354,8 @@ func (o *Orchestrator) dispatch(task planner.PlannedTask, sem chan struct{}, wtM
 		err = o.executeTask(task, wtPath)
 
 		// Cleanup worktree on success in automerge mode only.
-		// In dynamic mode, preserve worktrees so the post-run merge
-		// prompt can list and merge pending branches.
+		// In interactive mode, preserve worktrees until the user
+		// confirms merge at the wave boundary.
 		if err == nil && o.Config.Automerge {
 			wtMu.Lock()
 			if rmErr := o.Worktrees.Remove(task.WorktreeName); rmErr != nil {

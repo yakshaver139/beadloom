@@ -320,14 +320,13 @@ func runCmd() *cobra.Command {
 		Long: `Spawns Claude Code agent sessions in git worktrees to execute tasks.
 Plans automatically from the Beads database unless --plan is provided.
 
-In wave-barrier mode (--automerge), completed branches are squash-merged
-back into the current branch at wave boundaries so that later waves see
-upstream changes. If a bd sync branch is configured (bd init --branch),
-beads metadata is automatically synced after the run.
+In dynamic mode (default), you will be prompted to merge completed
+branches at each wave boundary. Use --git-trace to debug merge issues.
 
-In dynamic mode (default), after a successful run you will be prompted
-to merge pending branches interactively. Use --git-trace to debug merge
-issues.`,
+With --automerge, completed branches are squash-merged back into the
+current branch automatically at wave boundaries so that later waves see
+upstream changes. If a bd sync branch is configured (bd init --branch),
+beads metadata is automatically synced after the run.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Ensure a .gitignore exists so agent output doesn't pollute git
 			ensureGitignore()
@@ -412,6 +411,19 @@ issues.`,
 			// Detect sync branch for protected-branch workflow
 			syncBranch, _ := client.SyncBranch()
 
+			var onWaveComplete func(int, []string) bool
+			if !flagAutomerge {
+				onWaveComplete = func(waveIndex int, branches []string) bool {
+					fmt.Fprintf(os.Stderr, "\n%s %d beadloom branches ready to merge:\n",
+						ui.BoldWhite(fmt.Sprintf("Wave %d complete —", waveIndex+1)), len(branches))
+					for _, b := range branches {
+						fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Cyan("→"), ui.BoldMagenta(b))
+					}
+					fmt.Fprintln(os.Stderr)
+					return confirmPrompt(fmt.Sprintf("Merge wave %d branches? (y/N) ", waveIndex+1))
+				}
+			}
+
 			orch := orchestrator.New(plan, wm, orchestrator.Config{
 				MaxParallel:    flagMaxParallel,
 				Safe:           flagSafe,
@@ -422,6 +434,7 @@ issues.`,
 				WorktreeDir:    flagWorktreeDir,
 				DbPath:         flagDB,
 				SyncBranch:     syncBranch,
+				OnWaveComplete: onWaveComplete,
 			})
 
 			if !flagJSON {
@@ -462,11 +475,11 @@ issues.`,
 			rpt := reporter.New(plan, orch.State)
 			fmt.Println(rpt.Summary())
 
-			// Interactive merge prompt in non-automerge mode
+			// Show remaining unmerged branches (user may have declined at a wave boundary)
 			if !flagAutomerge {
 				branches, brErr := wm.ListBranches()
 				if brErr == nil && len(branches) > 0 {
-					fmt.Fprintf(os.Stderr, "\n%s %d beadloom branches ready to merge:\n", ui.BoldWhite("Pending:"), len(branches))
+					fmt.Fprintf(os.Stderr, "\n%s %d beadloom branches remaining:\n", ui.BoldWhite("Remaining:"), len(branches))
 					for _, b := range branches {
 						fmt.Fprintf(os.Stderr, "  %s %s\n", ui.Cyan("→"), ui.BoldMagenta(b))
 					}
@@ -476,7 +489,7 @@ issues.`,
 						}
 					}
 					fmt.Fprintln(os.Stderr)
-					if confirmPrompt("Merge these changes? (y/N) ") {
+					if confirmPrompt("Merge remaining branches? (y/N) ") {
 						fmt.Fprintf(os.Stderr, "\n🧵 Merging branches...\n")
 						mergeArgs := []string{"merge"}
 						if flagDB != "" {

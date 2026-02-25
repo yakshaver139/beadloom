@@ -166,7 +166,7 @@ beadloom run --automerge               # merge branches at wave boundaries
 beadloom run --automerge --git-trace   # log every git command for debugging
 ```
 
-In dynamic mode (the default), after a successful run you will be prompted to merge pending branches interactively.
+In dynamic mode (the default), you will be prompted to merge completed branches at each wave boundary.
 
 ### `beadloom status`
 
@@ -262,7 +262,7 @@ The visualiser frontend is embedded in the Go binary — no Node.js runtime requ
 1. **Graph Building** -- Queries `bd list --json --status open` for all open tasks, then `bd dep list <id>` for each to build a directed acyclic graph (DAG). Detects cycles defensively.
 2. **Critical Path Analysis** -- Runs the Critical Path Method (CPM): Kahn's topological sort, forward pass (earliest start/finish), backward pass (latest start/finish), slack calculation. Tasks with zero slack form the critical path.
 3. **Wave Computation** -- Groups tasks by earliest start time into parallel waves. Tasks in the same wave have no inter-dependencies and can run concurrently.
-4. **Execution** -- By default, uses a dynamic scheduler that dispatches tasks the moment all predecessors complete. With `--automerge`, switches to wave-barrier mode: all tasks in wave N complete, their changes are auto-committed, then their branches are squash-merged into the current branch before wave N+1 starts. Creates git worktrees via `bd worktree create` (which sets up beads database redirects automatically) and spawns Claude Code sessions with generated prompts. Critical path failures halt the pipeline; non-critical failures log warnings and continue. Use `--git-trace` to log every git command and its output for debugging merge issues. If a bd sync branch is configured, beads metadata is automatically synced at the end of the run.
+4. **Execution** -- Both modes use wave-barrier scheduling: all tasks in wave N complete before wave N+1 starts. At each wave boundary, `--automerge` squash-merges branches automatically; the default interactive mode prompts you to merge. This ensures later waves see upstream changes from earlier waves. Creates git worktrees via `bd worktree create` (which sets up beads database redirects automatically) and spawns Claude Code sessions with generated prompts. Critical path failures halt the pipeline; non-critical failures log warnings and continue. Use `--git-trace` to log every git command and its output for debugging merge issues. If a bd sync branch is configured, beads metadata is automatically synced at the end of the run.
 5. **Reporting** -- Real-time terminal status, JSON output, persistent state in `.beadloom/state.json` (works across terminal sessions).
 
 ## Global Flags
