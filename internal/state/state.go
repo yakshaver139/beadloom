@@ -359,3 +359,23 @@ func PlanExists() bool {
 	_, err := os.Stat(filepath.Join(stateDir, planFile))
 	return err == nil
 }
+
+// LoadCompletedTaskIDs reads the current state file (if any) and returns task IDs
+// with completed status. Used by the orchestrator on restart to skip tasks that
+// finished in a previous run but may not be closed in beads.
+func LoadCompletedTaskIDs() map[string]bool {
+	st, err := Load()
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]bool)
+	for id, ss := range st.Sessions {
+		if ss.Status == StatusCompleted {
+			result[id] = true
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}

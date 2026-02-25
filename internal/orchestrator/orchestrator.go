@@ -73,6 +73,46 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "  %s %d tasks already closed, will be skipped\n", ui.Dim("↩"), len(o.closed))
 	}
 
+	// Check previous state file for tasks completed in a prior run
+	if prev := state.LoadCompletedTaskIDs(); len(prev) > 0 {
+		added := 0
+		for id := range prev {
+			if _, inPlan := o.Plan.Tasks[id]; inPlan && !o.closed[id] {
+				o.closed[id] = true
+				added++
+			}
+		}
+		if added > 0 {
+			fmt.Fprintf(os.Stderr, "  %s %d tasks completed in previous run, will be skipped\n", ui.Dim("↩"), added)
+		}
+	}
+
+	// Check git branch state for tasks completed but not recorded
+	for id, task := range o.Plan.Tasks {
+		if o.closed[id] {
+			continue
+		}
+		// Check if the branch exists
+		if _, err := runGit(o.Config.GitTrace, ".", "rev-parse", "--verify", task.BranchName); err != nil {
+			continue // branch doesn't exist
+		}
+		// Check if the branch is an ancestor of HEAD (already merged)
+		if err := exec.Command("git", "merge-base", "--is-ancestor", task.BranchName, "HEAD").Run(); err == nil {
+			// Already merged — clean up worktree and branch
+			fmt.Fprintf(os.Stderr, "  %s %s already merged, cleaning up\n", ui.Dim("↩"), task.BranchName)
+			wtPath := o.Worktrees.Path(task.WorktreeName)
+			runGit(o.Config.GitTrace, ".", "worktree", "remove", "--force", wtPath)
+			runGit(o.Config.GitTrace, ".", "branch", "-D", task.BranchName)
+			o.closed[id] = true
+		} else {
+			// Branch exists with commits but not merged — task work is done,
+			// skip execution but mark for merge at wave boundary
+			o.closed[id] = true
+			fmt.Fprintf(os.Stderr, "  %s %s has unmerged work from previous run\n", ui.Dim("↩"), task.BranchName)
+		}
+	}
+	runGit(o.Config.GitTrace, ".", "worktree", "prune")
+
 	// Initialize state
 	st, err := state.New(o.Plan.ID, o.Plan.TotalWaves, o.Plan.TotalTasks)
 	if err != nil {
@@ -182,6 +222,16 @@ func (o *Orchestrator) runWaveMode() error {
 		}
 
 		o.updateCurrentWave()
+
+		// Include tasks from previous runs that have unmerged branches
+		for _, task := range wave.Tasks {
+			if !completedIDs[task.TaskID] && o.closed[task.TaskID] {
+				// Check if branch still exists (needs merging)
+				if err := exec.Command("git", "rev-parse", "--verify", task.BranchName).Run(); err == nil {
+					completedIDs[task.TaskID] = true
+				}
+			}
+		}
 
 		// Merge completed branches from this wave
 		if len(completedIDs) > 0 {
