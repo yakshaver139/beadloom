@@ -341,6 +341,107 @@ func TestCleanCurrent(t *testing.T) {
 	}
 }
 
+func TestLoadCompletedTaskIDs_NoStateFile(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	// No state file — should return nil
+	result := LoadCompletedTaskIDs()
+	if result != nil {
+		t.Errorf("expected nil with no state file, got %v", result)
+	}
+}
+
+func TestLoadCompletedTaskIDs_MixedStatuses(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	s, err := New("test-completed-ids", 1, 5)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	s.UpdateSession("t1", &SessionState{Status: StatusCompleted})
+	s.UpdateSession("t2", &SessionState{Status: StatusFailed})
+	s.UpdateSession("t3", &SessionState{Status: StatusRunning})
+	s.UpdateSession("t4", &SessionState{Status: StatusCompleted})
+	s.UpdateSession("t5", &SessionState{Status: StatusSkipped})
+
+	result := LoadCompletedTaskIDs()
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 completed task IDs, got %d: %v", len(result), result)
+	}
+	if !result["t1"] {
+		t.Error("expected t1 in completed set")
+	}
+	if !result["t4"] {
+		t.Error("expected t4 in completed set")
+	}
+	if result["t2"] {
+		t.Error("t2 (failed) should not be in completed set")
+	}
+	if result["t3"] {
+		t.Error("t3 (running) should not be in completed set")
+	}
+	if result["t5"] {
+		t.Error("t5 (skipped) should not be in completed set")
+	}
+}
+
+func TestLoadCompletedTaskIDs_NoCompleted(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	s, err := New("test-no-completed", 1, 2)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	s.UpdateSession("t1", &SessionState{Status: StatusFailed})
+	s.UpdateSession("t2", &SessionState{Status: StatusRunning})
+
+	result := LoadCompletedTaskIDs()
+	if result != nil {
+		t.Errorf("expected nil when no completed tasks, got %v", result)
+	}
+}
+
+func TestLoadCompletedTaskIDs_AllCompleted(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	s, err := New("test-all-completed", 1, 3)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	s.UpdateSession("t1", &SessionState{Status: StatusCompleted})
+	s.UpdateSession("t2", &SessionState{Status: StatusCompleted})
+	s.UpdateSession("t3", &SessionState{Status: StatusCompleted})
+
+	result := LoadCompletedTaskIDs()
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 completed task IDs, got %d", len(result))
+	}
+}
+
+func TestLoadCompletedTaskIDs_EmptySessions(t *testing.T) {
+	defer os.RemoveAll(".beadloom")
+
+	_, err := New("test-empty-sessions", 1, 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// State exists but has no sessions
+	result := LoadCompletedTaskIDs()
+	if result != nil {
+		t.Errorf("expected nil with empty sessions, got %v", result)
+	}
+}
+
 func TestHistoryExists(t *testing.T) {
 	defer os.RemoveAll(".beadloom")
 
