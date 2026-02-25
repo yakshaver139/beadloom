@@ -338,8 +338,10 @@ func (o *Orchestrator) dispatch(task planner.PlannedTask, sem chan struct{}, wtM
 		// Execute the task
 		err = o.executeTask(task, wtPath)
 
-		// Cleanup worktree on success (serialized via wtMu)
-		if err == nil {
+		// Cleanup worktree on success in automerge mode only.
+		// In dynamic mode, preserve worktrees so the post-run merge
+		// prompt can list and merge pending branches.
+		if err == nil && o.Config.Automerge {
 			wtMu.Lock()
 			if rmErr := o.Worktrees.Remove(task.WorktreeName); rmErr != nil {
 				fmt.Fprintf(os.Stderr, "  %s failed to remove worktree %s: %v\n", ui.Yellow("⚠️  Warning:"), task.WorktreeName, rmErr)
@@ -405,8 +407,10 @@ func (o *Orchestrator) markSkipped(taskID string) {
 	o.State.UpdateSession(taskID, st)
 
 	// Update beads — move back to open so it can be retried in a future run
-	if err := o.Worktrees.Client.Update(taskID, "open", ""); err != nil {
-		fmt.Fprintf(os.Stderr, "  %s bd update %s --status open: %v\n", ui.Yellow("⚠"), taskID, err)
+	if o.Worktrees != nil {
+		if err := o.Worktrees.Client.Update(taskID, "open", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "  %s bd update %s --status open: %v\n", ui.Yellow("⚠"), taskID, err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "  ⊘ %s %s\n", ui.TaskPrefix(taskID), ui.Yellow("Skipped (predecessor failed)"))
