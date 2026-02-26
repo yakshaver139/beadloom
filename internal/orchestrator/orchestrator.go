@@ -111,6 +111,34 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "  %s %s has unmerged work from previous run\n", ui.Dim("↩"), task.BranchName)
 		}
 	}
+
+	// Layer 4: scan git history for commits containing task IDs.
+	// This is the most robust check — survives state file overwrites,
+	// beads failures, and branch deletions.
+	if logOut, err := runGit(o.Config.GitTrace, ".", "log", "--oneline", "-n", "200"); err == nil {
+		logStr := string(logOut)
+		added := 0
+		for id := range o.Plan.Tasks {
+			if o.closed[id] {
+				continue
+			}
+			// Match "beadloom: <id>" (autoCommit, mergeWaveBranches, CLI merge)
+			// and "beadloom/<id>" (merge commit default messages)
+			if strings.Contains(logStr, "beadloom: "+id) || strings.Contains(logStr, "beadloom/"+id) {
+				o.closed[id] = true
+				added++
+				fmt.Fprintf(os.Stderr, "  %s %s found in git history\n", ui.Dim("↩"), id)
+				// Update beads so bdl status shows correct info
+				if err := o.Worktrees.Client.Close(id, "Completed (detected from git history)"); err != nil {
+					fmt.Fprintf(os.Stderr, "  %s bd close %s: %v\n", ui.Yellow("⚠"), id, err)
+				}
+			}
+		}
+		if added > 0 {
+			fmt.Fprintf(os.Stderr, "  %s %d tasks detected from git history, will be skipped\n", ui.Dim("↩"), added)
+		}
+	}
+
 	runGit(o.Config.GitTrace, ".", "worktree", "prune")
 
 	// Initialize state

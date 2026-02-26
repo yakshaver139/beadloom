@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -581,5 +582,185 @@ func TestRestartDetection_WaveMergeSkipsMergedBranch(t *testing.T) {
 
 	if completedIDs["t1"] {
 		t.Error("t1 should not be in completedIDs (branch was already deleted)")
+	}
+}
+
+// gitLogDetect simulates the Layer 4 git log scan from Run().
+// It scans git log output for task IDs matching beadloom commit patterns.
+func gitLogDetect(t *testing.T, o *Orchestrator) {
+	t.Helper()
+	logOut, err := runGit(false, ".", "log", "--oneline", "-n", "200")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	logStr := string(logOut)
+	for id := range o.Plan.Tasks {
+		if o.closed[id] {
+			continue
+		}
+		if strings.Contains(logStr, "beadloom: "+id) || strings.Contains(logStr, "beadloom/"+id) {
+			o.closed[id] = true
+		}
+	}
+}
+
+func TestRestartDetection_GitLogBeadloomPrefix(t *testing.T) {
+	repoDir := initTestRepo(t)
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+
+	// Create commits matching beadloom's autoCommit/mergeWaveBranches format
+	gitInDir(t, repoDir, "commit", "--allow-empty", "-m", "beadloom: chess-49i — Scaffold React app")
+	gitInDir(t, repoDir, "commit", "--allow-empty", "-m", "beadloom: chess-2ps — Define TypeScript types")
+
+	plan := &planner.ExecutionPlan{
+		Tasks: map[string]*planner.PlannedTask{
+			"chess-49i": {TaskID: "chess-49i"},
+			"chess-2ps": {TaskID: "chess-2ps"},
+			"chess-xxx": {TaskID: "chess-xxx"}, // not in git log
+		},
+	}
+
+	o := &Orchestrator{
+		Plan:   plan,
+		closed: make(map[string]bool),
+	}
+
+	gitLogDetect(t, o)
+
+	if !o.closed["chess-49i"] {
+		t.Error("chess-49i should be closed (found via beadloom: prefix in git log)")
+	}
+	if !o.closed["chess-2ps"] {
+		t.Error("chess-2ps should be closed (found via beadloom: prefix in git log)")
+	}
+	if o.closed["chess-xxx"] {
+		t.Error("chess-xxx should not be closed (not in git log)")
+	}
+}
+
+func TestRestartDetection_GitLogMergeBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+
+	// Create a branch, add a commit, and merge it (creates a merge commit message)
+	gitInDir(t, repoDir, "checkout", "-b", "beadloom/chess-8m6")
+	gitInDir(t, repoDir, "commit", "--allow-empty", "-m", "Add curated openings dataset")
+	gitInDir(t, repoDir, "checkout", "main")
+	gitInDir(t, repoDir, "merge", "--no-ff", "beadloom/chess-8m6", "-m", "Merge branch 'beadloom/chess-8m6'")
+	// Delete branch to simulate post-merge cleanup
+	gitInDir(t, repoDir, "branch", "-D", "beadloom/chess-8m6")
+
+	plan := &planner.ExecutionPlan{
+		Tasks: map[string]*planner.PlannedTask{
+			"chess-8m6": {TaskID: "chess-8m6"},
+		},
+	}
+
+	o := &Orchestrator{
+		Plan:   plan,
+		closed: make(map[string]bool),
+	}
+
+	gitLogDetect(t, o)
+
+	if !o.closed["chess-8m6"] {
+		t.Error("chess-8m6 should be closed (found via beadloom/ in merge commit)")
+	}
+}
+
+func TestRestartDetection_GitLogNoMatch(t *testing.T) {
+	repoDir := initTestRepo(t)
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+
+	// Only unrelated commits exist
+	gitInDir(t, repoDir, "commit", "--allow-empty", "-m", "initial setup")
+	gitInDir(t, repoDir, "commit", "--allow-empty", "-m", "add README")
+
+	plan := &planner.ExecutionPlan{
+		Tasks: map[string]*planner.PlannedTask{
+			"task-abc": {TaskID: "task-abc"},
+		},
+	}
+
+	o := &Orchestrator{
+		Plan:   plan,
+		closed: make(map[string]bool),
+	}
+
+	gitLogDetect(t, o)
+
+	if o.closed["task-abc"] {
+		t.Error("task-abc should not be closed (no matching commits in git log)")
+	}
+}
+
+func TestRestartDetection_GitLogSkipsAlreadyClosed(t *testing.T) {
+	repoDir := initTestRepo(t)
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+
+	gitInDir(t, repoDir, "commit", "--allow-empty", "-m", "beadloom: task-1 — Already done")
+
+	plan := &planner.ExecutionPlan{
+		Tasks: map[string]*planner.PlannedTask{
+			"task-1": {TaskID: "task-1"},
+		},
+	}
+
+	o := &Orchestrator{
+		Plan:   plan,
+		closed: map[string]bool{"task-1": true}, // already closed via beads
+	}
+
+	// Run git log detection — should not attempt to re-process
+	logOut, err := runGit(false, ".", "log", "--oneline", "-n", "200")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	logStr := string(logOut)
+
+	processed := 0
+	for id := range o.Plan.Tasks {
+		if o.closed[id] {
+			continue // this is the skip logic we're testing
+		}
+		if strings.Contains(logStr, "beadloom: "+id) || strings.Contains(logStr, "beadloom/"+id) {
+			processed++
+		}
+	}
+
+	if processed != 0 {
+		t.Errorf("expected 0 tasks processed (already closed), got %d", processed)
 	}
 }
